@@ -1,22 +1,23 @@
 // ==UserScript==
 // @name          Planets.nu - Enemy Ship List Plugin
 // @namespace     kedalion/enemyShipList
-// @version       1.39
-// @date          2018-12-22
-// @author        kedalion
+// @version       1.40
+// @date          2026-10-18
+// @author        kedalion and sphere300
 // @description   NU dashboard plugin which tracks and lists all ships ever seen. The plugin automatically updates the list and let's you gather information on the enemy fleet.
 // @include       http://planets.nu/*
 // @include       http://play.planets.nu/*
 // @include       http://test.planets.nu/*
 // @include       https://mobile.planets.nu/*
 // @include       https://planets.nu/*
-// @resource      userscript https://greasyfork.org/en/scripts/5994-planets-nu-enemy-ship-list-plugin
+// @resource      userscript https://github.com/sphere300/PlanetsNuEnemyShipListPlugin
 // @homepage      http://planets.nu/discussion/utility-script-enemy-ship-list-plugin
 
 // ==/UserScript==
 
 /*
 Change log:
+1.40   Added a new feature to see the historical movement of enemy ships. You can filter by all, by player, or by ship. You can show the path range for specific time windows and fixed one issue with the origonal plugins icon
 1.39   Updated include for new URL [2018-12-22]
 1.38   Updated to recent changes in mobile client [2018-12-22]
 1.37   Fixed check for mobile client to use version number [2018-12-15]
