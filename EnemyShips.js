@@ -59,6 +59,26 @@ function wrapper() { // wrapper for injection
 
 	var plugin_version = 1.39;
 
+	//dashboard icon: black tile with a red ship, inlined so no external image is needed
+	var enemy_ships_icon = "data:image/svg+xml," + encodeURIComponent(
+		"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512' width='90' height='90'>" +
+		"<defs>" +
+		"<filter id='s' x='-20%' y='-20%' width='140%' height='150%'><feGaussianBlur in='SourceAlpha' stdDeviation='8'/><feOffset dy='10'/><feComponentTransfer><feFuncA type='linear' slope='.35'/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in='SourceGraphic'/></feMerge></filter>" +
+		"<linearGradient id='t' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#3a3a3a'/><stop offset='.12' stop-color='#1a1a1a'/><stop offset='1' stop-color='#000'/></linearGradient>" +
+		"<linearGradient id='a' x1='0' y1='0' x2='1' y2='0'><stop offset='0' stop-color='#fff' stop-opacity='0'/><stop offset='.5' stop-color='#fff' stop-opacity='.85'/><stop offset='1' stop-color='#fff' stop-opacity='0'/></linearGradient>" +
+		"</defs>" +
+		"<rect x='80' y='72' width='352' height='340' rx='46' fill='url(#t)' filter='url(#s)'/>" +
+		"<g fill='#e00000'>" +
+		"<ellipse cx='175' cy='187' rx='48' ry='10'/>" +
+		"<ellipse cx='177' cy='178' rx='14' ry='6'/>" +
+		"<polygon points='196,192 212,192 232,216 214,216'/>" +
+		"<rect x='198' y='212' width='94' height='20' rx='10'/>" +
+		"<polygon points='280,216 292,216 302,168 290,168'/>" +
+		"<path d='M280,158H385V171H280A6.5,6.5 0 0 1 280,158Z'/>" +
+		"</g>" +
+		"<path d='M143,328Q255,280 368,328' fill='none' stroke='url(#a)' stroke-width='2.5' stroke-linecap='round'/>" +
+		"</svg>");
+
 	console.log("EnemyShipList plugin version: v" + plugin_version);
 
 	function ShipMin() {
@@ -194,7 +214,7 @@ function wrapper() { // wrapper for injection
 			}
 
 			node.setAttribute("style", "color:#FF0000"); //#FF8000 //#DF0101");
-			node.innerHTML = "<div class=\"iconholder\"><img src=\"https://planets.nu/_library/2013/7/enemy_ships.png\"/></div>" +
+			node.innerHTML = "<div class=\"iconholder\"><img width=\"90\" height=\"90\" src=\"" + enemy_ships_icon + "\"/></div>" +
 				(vgap.plugins["enemyShipListPlugin"].numEnemyShips + vgap.plugins["enemyShipListPlugin"].numAlliedShips) +
 				" Alien Starships";
 			node.onclick = function () { vgap.plugins["enemyShipListPlugin"].showEnemyShips(); };
@@ -262,7 +282,17 @@ function wrapper() { // wrapper for injection
 					for (var i = 1; i < vgap.plugins["enemyShipListPlugin"].drawSelection.length; i++) {
 						newCss.innerHTML += ".race" + i + "::before { content: '" + i + "'; color: #FFFFFF }";
 						newCss.innerHTML += ".race" + i + "enabled::before { content: '" + i + "'; color: " + vgap.plugins["enemyShipListPlugin"].colorsA[i] + "}";
+						//selected players get an outline in their colour, since allied/enemy numbers keep their relation colour
+						newCss.innerHTML += "#EnemyShipTool .race" + i + "enabled { box-shadow: inset 0 0 0 2px " + vgap.plugins["enemyShipListPlugin"].colorsA[i] + "}";
 					}
+					//relation colours for the player numbers
+					newCss.innerHTML += "#EnemyShipTool .relally::before { color: #00FF00 !important }";
+					newCss.innerHTML += "#EnemyShipTool .relenemy::before { color: #FF0000 !important }";
+					newCss.innerHTML += "#EnemyShipTool .relself::before { color: #FFFF00 !important }";
+					//dead players get the round button filled with a cross hatch pattern; drawn as the button's own background so it is clipped to the button's circle
+					newCss.innerHTML += "#EnemyShipTool .mapbutton.playerdead { background-image: " +
+						"repeating-linear-gradient(45deg, rgba(255,0,0,0.6) 0, rgba(255,0,0,0.6) 1px, transparent 1px, transparent 5px)," +
+						" repeating-linear-gradient(-45deg, rgba(255,0,0,0.6) 0, rgba(255,0,0,0.6) 1px, transparent 1px, transparent 5px) !important; }";
 					newCss.innerHTML += ".enemyshipmenu::before { content: \"\\f197\"}";
 
 					head.appendChild(newCss);
@@ -334,8 +364,15 @@ function wrapper() { // wrapper for injection
 		numAlliedShips: 0,
 		view: 6,
 		drawSelection: [],
-		drawRadius: 20,
+		drawRadius: 3,
+		historyFadeStep: 0.15,	//opacity lost per turn of age on history paths
+		historyMinAlpha: 0.10,	//oldest history paths never fade below this
 		max_ship_id: 0,
+		shipFilterId: 0,
+		showShipFilter: false,
+		turnFrom: null,	//null = default: last defaultTurnSpan turns
+		defaultTurnSpan: 15,
+		turnTo: 0,		//0 = current turn
 
 		colorsA: ["#F0F8FF", "#32CD32", "#CD5C5C", "#FFC0CB", "#98FB98", "#C0C0C0", "#FFFF00", "#EE82EE", "#D3D3D3", "#B0E0E6", "#87CEFA", "#7B68EE", "#F4A460", "#D2B48C", "#FF6347", "#F5DEB3", "#F08080", "#2F4F4F", "#008080", "#B22222", "#808000", "#9370DB", "#00FF00", "#4B0082", "#D2B48C", "#9ACD32", "#DAA520", "#F0F8FF", "#6B8E23", "#FF4500"],
 		//
@@ -2012,6 +2049,17 @@ function wrapper() { // wrapper for injection
 		 */
 		drawEnemyShips: function () {
 
+			var range = this.getTurnRange();
+
+			//single ship filter overrides the player selection
+			if (this.shipFilterId) {
+				var filtered = this.getShipById(this.shipFilterId);
+				if (filtered && vgap.game.turn >= filtered.infoturn) {
+					this.drawShipMarker(filtered, range);
+				}
+				return;
+			}
+
 			var drawShips = false;
 
 			for (var p = 0; p <= vgap.players.length; p++) {
@@ -2028,38 +2076,153 @@ function wrapper() { // wrapper for injection
 				if (vgap.game.turn < ship.infoturn)
 					continue;
 				if (vgap.plugins["enemyShipListPlugin"].drawSelection[0] || vgap.plugins["enemyShipListPlugin"].drawSelection[ship.ownerid]) {
-					var markup = { attr: { stroke: this.colorsA[ship.ownerid] } };
-					this.drawScaledCircle(ship.x, ship.y, vgap.plugins["enemyShipListPlugin"].drawRadius, markup.attr, null);
-					if (ship.history) {
-						keyList = Object.keys(ship.history)
-						lastTurnKey = null;
-						lastTurn = null;
-						for (let sh = 0; sh < keyList.length; sh++) {
-							if (lastTurn) {
-								this.drawLine(lastTurn.x, lastTurn.y, ship.history[keyList[sh]].x, ship.history[keyList[sh]].y, markup.attr, null)
-							}
-							lastTurnKey = keyList[sh];
-							lastTurn = ship.history[keyList[sh]];
-						}
-					}
+					this.drawShipMarker(ship, range);
 				}
 
 
 
 			}
+		},
 
-			//in case of timemachine turn, also mark all visible ships
-			if (vgap.game.turn < vgap.nowTurn) {
-				for (var s = 0; s < vgap.ships.length; s++) {
-					var ship = vgap.ships[s];
+		/**
+		 * Draw the last known location of a ship within the turn range and its movement history
+		 * @param ship		ship to draw
+		 * @param range		turn range from getTurnRange
+		 */
+		drawShipMarker: function (ship, range) {
+			var sightings = this.getSightingsInRange(ship, range);
+			if (sightings.length == 0)
+				return;
 
-					if (vgap.plugins["enemyShipListPlugin"].drawSelection[0] || vgap.plugins["enemyShipListPlugin"].drawSelection[ship.ownerid]) {
-						var markup = { attr: { stroke: this.colorsA[ship.ownerid] } };
+			var markup = { attr: { stroke: this.colorsA[ship.ownerid] } };
+			var last = sightings[sightings.length - 1];
+			//only mark the last known location when the ship is not visible on the viewed turn
+			if (last.turn != vgap.game.turn) {
+				this.drawScaledCircle(last.x, last.y, vgap.plugins["enemyShipListPlugin"].drawRadius, markup.attr, null);
+			}
 
-						this.drawScaledCircle(ship.x, ship.y, vgap.plugins["enemyShipListPlugin"].drawRadius, markup.attr, null);
-					}
+			//fade older path segments only for the full turn range or the default window, not custom ranges
+			var fade = (range.to == range.max && (range.from == range.min || range.from == range.defaultFrom));
+			for (var sh = 1; sh < sightings.length; sh++) {
+				var alpha = 1;
+				if (fade) {
+					alpha = Math.max(this.historyMinAlpha, 1 - this.historyFadeStep * (range.max - sightings[sh].turn));
+				}
+				this.drawLine(sightings[sh - 1].x, sightings[sh - 1].y, sightings[sh].x, sightings[sh].y, markup.attr, null, alpha);
+			}
+		},
+
+		/**
+		 * Get the turn range to display, clamped to first list turn and current turn
+		 * @return      {min, max, from, to, defaultFrom}
+		 */
+		getTurnRange: function () {
+			var plugin = vgap.plugins["enemyShipListPlugin"];
+			var max = vgap.game.turn;
+			var min = Math.min(parseInt(plugin.firstListTurn, 10) || 1, max);
+			var defaultFrom = Math.max(min, max - plugin.defaultTurnSpan + 1);
+			var from = (plugin.turnFrom != null) ? Math.min(Math.max(plugin.turnFrom, min), max) : defaultFrom;
+			var to = plugin.turnTo ? Math.min(Math.max(plugin.turnTo, from), max) : max;
+			return { min: min, max: max, from: from, to: to, defaultFrom: defaultFrom };
+		},
+
+		/**
+		 * Get the positions a ship was seen at within a turn range, oldest first
+		 * @param ship		ship
+		 * @param range		turn range from getTurnRange
+		 * @return 			list of {turn, x, y}
+		 */
+		getSightingsInRange: function (ship, range) {
+			var sightings = [];
+			var keyList = ship.history ? Object.keys(ship.history) : [];
+			for (var k = 0; k < keyList.length; k++) {
+				var turn = parseInt(keyList[k], 10);
+				if (!isNaN(turn)) {
+					sightings.push({ turn: turn, x: ship.history[keyList[k]].x, y: ship.history[keyList[k]].y });
 				}
 			}
+			//ships without history (e.g. added manually) only have their last sighting
+			if (sightings.length == 0) {
+				sightings.push({ turn: parseInt(ship.infoturn, 10), x: ship.x, y: ship.y });
+			}
+
+			sightings = sightings.filter(function (s) { return s.turn >= range.from && s.turn <= range.to; });
+			sightings.sort(function (a, b) { return a.turn - b.turn; });
+			return sightings;
+		},
+
+		/**
+		 * Set the turn range to display and refresh the map and filter controls
+		 * @param from		first turn to show
+		 * @param to		last turn to show
+		 */
+		setTurnRange: function (from, to) {
+			var plugin = vgap.plugins["enemyShipListPlugin"];
+			var range = plugin.getTurnRange();
+			//keep following the default window while the slider sits on it
+			plugin.turnFrom = (from == range.defaultFrom) ? null : from;
+			plugin.turnTo = (to >= range.max) ? 0 : to;
+
+			//drop the single ship filter if that ship was not seen in the new range
+			var filtered = plugin.getShipById(plugin.shipFilterId);
+			if (filtered && plugin.getSightingsInRange(filtered, plugin.getTurnRange()).length == 0) {
+				plugin.shipFilterId = 0;
+			}
+
+			vgap.map.draw();
+
+			//only refresh the ship dropdown; rebuilding the whole tool would take focus away from the slider
+			$("#EnemyShipFilterSelect").replaceWith(plugin.buildShipFilterSelect());
+		},
+
+		/**
+		 * Build the from/to turn sliders
+		 * @return      jQuery element
+		 */
+		buildTurnRangeControl: function () {
+			var plugin = vgap.plugins["enemyShipListPlugin"];
+			var range = plugin.getTurnRange();
+
+			var container = $("<div id='EnemyShipTurnRange'></div>");
+			var header = $("<div></div>").appendTo(container);
+			var label = $("<span></span>").appendTo(header);
+			var resetButton = $("<button type='button' style='margin-left:8px;'>Reset</button>").appendTo(header);
+			var fromRow = $("<div>From </div>").appendTo(container);
+			var fromInput = $("<input type='range' style='width:140px; vertical-align:middle;'>").attr({ min: range.min, max: range.max }).val(range.from).appendTo(fromRow);
+			var toRow = $("<div>To&nbsp;&nbsp;&nbsp;&nbsp; </div>").appendTo(container);
+			var toInput = $("<input type='range' style='width:140px; vertical-align:middle;'>").attr({ min: range.min, max: range.max }).val(range.to).appendTo(toRow);
+
+			var updateLabel = function () { label.text("Turns " + fromInput.val() + " to " + toInput.val()); };
+
+			//keep from <= to while dragging
+			fromInput.on("input", function () {
+				if (parseInt(fromInput.val(), 10) > parseInt(toInput.val(), 10)) toInput.val(fromInput.val());
+				updateLabel();
+			});
+			toInput.on("input", function () {
+				if (parseInt(toInput.val(), 10) < parseInt(fromInput.val(), 10)) fromInput.val(toInput.val());
+				updateLabel();
+			});
+			container.find("input").on("change", function () {
+				plugin.setTurnRange(parseInt(fromInput.val(), 10), parseInt(toInput.val(), 10));
+			});
+			//restore the default window (last defaultTurnSpan turns up to the current turn)
+			resetButton.on("click", function () {
+				plugin.turnFrom = null;
+				plugin.turnTo = 0;
+				var defaults = plugin.getTurnRange();
+				fromInput.val(defaults.from);
+				toInput.val(defaults.to);
+				updateLabel();
+				plugin.setTurnRange(defaults.from, defaults.to);
+			});
+			//keep slider interaction from reaching the starmap
+			container.find("input, button").on("mousedown mousemove click touchstart touchmove", function (e) { e.stopPropagation(); });
+			//keep arrow keys on the focused slider from reaching the NU hotkeys
+			container.find("input, button").on("keydown", function (e) { e.stopPropagation(); });
+
+			updateLabel();
+			return container;
 		},
 
 		/**
@@ -2089,18 +2252,23 @@ function wrapper() { // wrapper for injection
 		 * @param radius	radius of circle
 		 * @param attr		color of the drawing
 		 * @param paperset	where to draw
+		 * @param alpha		opacity of the line (default 1)
 		 */
-		drawLine: function (x1, y1, x2, y2, attr, paperset) {
+		drawLine: function (x1, y1, x2, y2, attr, paperset, alpha) {
 			//if (!vgap.map.isVisible(x, y, radius)) return;
 			if (paperset == null) {
 				paperset = vgap.map.ctx;
 			}
 
+			paperset.save();
+			paperset.strokeStyle = attr.stroke;
+			paperset.globalAlpha = (alpha == null) ? 1 : alpha;
 			paperset.beginPath();
 			paperset.moveTo(vgap.map.screenX(x1), vgap.map.screenY(y1));
 			paperset.lineTo(vgap.map.screenX(x2), vgap.map.screenY(y2));
 			paperset.closePath();
 			paperset.stroke();
+			paperset.restore();
 		},
 
 		toggleSelectionHelper: function () {
@@ -2132,6 +2300,12 @@ function wrapper() { // wrapper for injection
 						vgap.plugins["enemyShipListPlugin"].drawSelection[0] = false;
 					}
 				}
+			}
+
+			//drop the single ship filter if its owner is no longer selected
+			var filtered = vgap.plugins["enemyShipListPlugin"].getShipById(vgap.plugins["enemyShipListPlugin"].shipFilterId);
+			if (filtered && !vgap.plugins["enemyShipListPlugin"].isOwnerSelected(filtered.ownerid)) {
+				vgap.plugins["enemyShipListPlugin"].shipFilterId = 0;
 			}
 
 			if (vgap.plugins["enemyShipListPlugin"].mobile_version) {
@@ -2187,6 +2361,10 @@ function wrapper() { // wrapper for injection
 				$("#OverlayFilter").height($(window).height() - 40);
 				$("#OverlayFilter").width(380);
 			}
+			$("<div style='margin-bottom:10px;'></div>")
+				.append(vgap.plugins["enemyShipListPlugin"].buildTurnRangeControl())
+				.append($("<div style='margin-top:10px;'>Only show ship: </div>").append(vgap.plugins["enemyShipListPlugin"].buildShipFilterSelect()))
+				.prependTo("#OverlayFilter");
 			$("#OverlayFilter").jScrollPane();
 		},
 
@@ -2205,22 +2383,195 @@ function wrapper() { // wrapper for injection
 			$("#EnemyShipTool").remove();
 			$("<div id='EnemyShipTool' " + "></div>").appendTo("#MapControls");
 			vgap.map.addMapTool("Close Enemy Ship Menu", "enemymenuhide", function () { vgap.plugins["enemyShipListPlugin"].toggleSelectionTool(); }, "#EnemyShipTool")
-			vgap.map.addMapTool("Filter To Ship", "enemyshipfilter", function () { vgap.plugins["enemyShipListPlugin"].toggleSelectionTool(); }, "#EnemyShipTool")
+			vgap.map.addMapTool("Filter To Ship", "enemyshipfilter" + (this.showShipFilter ? " activeColor" : ""), function () { vgap.plugins["enemyShipListPlugin"].toggleShipFilter(); }, "#EnemyShipTool")
 			for (var i = this.drawSelection.length - 1; i > 0; i--) {
 				// if (i == vgap.player.id) {
 				// 	continue;
 				// }
-				var name = "Player+Race";
-				for (var p = 0; p < vgap.players.length; p++) {
-					if (vgap.players[p].id == i) {
-						name = vgap.players[p].fullname;
-						break;
-					}
-				}
-
-				vgap.map.addMapTool(name, "race" + i.toString() + (this.drawSelection[i] ? "enabled" : ""), vgap.plugins["enemyShipListPlugin"].toggleSelectionHelper.bind(i), "#EnemyShipTool");
+				vgap.map.addMapTool(this.getPlayerTooltip(i), "race" + i.toString() + (this.drawSelection[i] ? "enabled" : "") + this.getRelationClass(i) + (this.isPlayerDead(i) ? " playerdead" : ""), vgap.plugins["enemyShipListPlugin"].toggleSelectionHelper.bind(i), "#EnemyShipTool");
 			}
 			vgap.map.addMapTool("All ships", "allships" + (this.drawSelection[0] ? "enabled" : ""), function () { vgap.plugins["enemyShipListPlugin"].toggleSelection(0) }, "#EnemyShipTool");
+			$("<div style='clear:both; float:right; margin-right:10px; padding:4px; background:rgba(0,0,0,0.6); color:#FFFFFF;'></div>").append(this.buildTurnRangeControl()).appendTo("#EnemyShipTool");
+			if (this.showShipFilter) {
+				$("<div style='clear:both; float:right; margin-right:10px;'></div>").append(this.buildShipFilterSelect()).appendTo("#EnemyShipTool");
+			}
+		},
+
+		/**
+		 * Hover text for a player slot button: player name, race and relation
+		 * @param id	player slot
+		 * @return 		text safe to put in a single quoted title attribute
+		 */
+		getPlayerTooltip: function (id) {
+			var player = vgap.getPlayer(id);
+			if (!player)
+				return "Slot " + id;
+
+			var race = vgap.getRace(player.raceid);
+			var relation = "";
+			if (id == vgap.player.id) {
+				relation = "You";
+			} else if (this.getRelationClass(id) == " relally") {
+				relation = "Full alliance";
+			} else if (this.getRelationClass(id) == " relenemy") {
+				relation = "No alliance";
+			} else {
+				relation = "Safe passage / shared intel";
+			}
+
+			if (this.isPlayerDead(id))
+				relation = "Dead, " + relation;
+
+			var text = "Slot " + id + ": " + player.username + " - " + (race ? race.name : "?") + " (" + relation + ")";
+			return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/'/g, "&#39;");
+		},
+
+		/**
+		 * Check if a player has been eliminated: NU player status 3 (dead), or nothing left on the scoreboard
+		 * @param id	player slot
+		 * @return 		true if the player is dead
+		 */
+		isPlayerDead: function (id) {
+			var player = vgap.getPlayer(id);
+			if (!player)
+				return false;
+			if (player.status == 3)
+				return true;
+			for (var i = 0; i < vgap.scores.length; i++) {
+				var score = vgap.scores[i];
+				if (score.ownerid == id) {
+					return score.planets == 0 && score.capitalships == 0 && score.freighters == 0 && score.starbases == 0;
+				}
+			}
+			return false;
+		},
+
+		/**
+		 * CSS class marking a player's relation to us: yellow for ourselves, green for full alliance,
+		 * red for no alliance, none for safe passage / shared intel (keeps the normal colour)
+		 * @param id	player slot
+		 * @return 		class name with leading space, or empty string
+		 */
+		getRelationClass: function (id) {
+			if (id == vgap.player.id)
+				return " relself";
+			if (vgap.fullallied(id))
+				return " relally";
+			var relation = vgap.getRelation(id);
+			if (relation == null || (relation.relationto < 2 && relation.relationfrom < 2))
+				return " relenemy";
+			return "";
+		},
+
+		/**
+		 * Show or hide the single ship filter dropdown. Hiding it also clears the filter.
+		 */
+		toggleShipFilter: function () {
+			var plugin = vgap.plugins["enemyShipListPlugin"];
+			plugin.showShipFilter = !plugin.showShipFilter;
+			if (!plugin.showShipFilter && plugin.shipFilterId) {
+				plugin.shipFilterId = 0;
+				vgap.map.draw();
+			}
+			plugin.showSelectionTool();
+		},
+
+		/**
+		 * Get the enemy ships available for the single ship filter, ordered by the
+		 * turn they were last seen (most recent first) and then by ship id
+		 * @return      sorted list of ships
+		 */
+		getShipFilterShips: function () {
+			var range = this.getTurnRange();
+			var ships = [];
+			for (var s = 0; s < this.enemyShipList.length; s++) {
+				var ship = this.enemyShipList[s];
+				if (ship.ownerid == vgap.player.id)
+					continue;
+				if (!this.isOwnerSelected(ship.ownerid))
+					continue;
+				//ignore info from future turns in case of history
+				if (vgap.game.turn < ship.infoturn)
+					continue;
+				//only ships seen within the turn range; last seen = latest sighting in range
+				var sightings = this.getSightingsInRange(ship, range);
+				if (sightings.length == 0)
+					continue;
+				ships.push({ ship: ship, lastSeen: sightings[sightings.length - 1].turn });
+			}
+			ships.sort(function (a, b) {
+				return (b.lastSeen - a.lastSeen) || (parseInt(a.ship.id, 10) - parseInt(b.ship.id, 10));
+			});
+			return ships;
+		},
+
+		/**
+		 * Build the dropdown for filtering the starmap down to a single ship
+		 * @return      jQuery select element
+		 */
+		buildShipFilterSelect: function () {
+			var plugin = vgap.plugins["enemyShipListPlugin"];
+			var select = $("<select id='EnemyShipFilterSelect'></select>");
+			$("<option value='0'></option>").text("-- No ship filter --").appendTo(select);
+
+			var ships = plugin.getShipFilterShips();
+			for (var s = 0; s < ships.length; s++) {
+				var ship = ships[s].ship;
+				var player = vgap.getPlayer(ship.ownerid);
+				var race = player ? vgap.getRace(player.raceid).shortname : "?";
+				$("<option></option>")
+					.val(ship.id)
+					.text("Turn " + ships[s].lastSeen + " - #" + ship.id + " " + ship.name + " (" + race + ")")
+					.prop("selected", ship.id == plugin.shipFilterId)
+					.appendTo(select);
+			}
+
+			select.change(function () { plugin.setShipFilter(parseInt($(this).val(), 10)); });
+			//keep clicks on the dropdown from reaching the starmap
+			select.on("mousedown click touchstart", function (e) { e.stopPropagation(); });
+			return select;
+		},
+
+		/**
+		 * Restrict the starmap display to a single ship and center on it
+		 * @param id	id of ship to show, 0 to clear the filter
+		 */
+		setShipFilter: function (id) {
+			this.shipFilterId = id || 0;
+			var ship = this.getShipById(this.shipFilterId);
+			if (ship) {
+				var sightings = this.getSightingsInRange(ship, this.getTurnRange());
+				var last = sightings.length > 0 ? sightings[sightings.length - 1] : ship;
+				vgap.map.centerMap(last.x, last.y);
+			}
+			vgap.map.draw();
+		},
+
+		/**
+		 * Check if a player's ships are selected for display. With no player selected, all players count as selected
+		 * @param ownerid	player id
+		 * @return 			true if the player's ships belong in the ship filter
+		 */
+		isOwnerSelected: function (ownerid) {
+			var selection = vgap.plugins["enemyShipListPlugin"].drawSelection;
+			if (selection[0] || selection[ownerid])
+				return true;
+			for (var p = 1; p < selection.length; p++) {
+				if (selection[p])
+					return false;
+			}
+			return true;
+		},
+
+		getShipById: function (id) {
+			if (!id)
+				return null;
+			for (var s = 0; s < this.enemyShipList.length; s++) {
+				if (this.enemyShipList[s].id == id) {
+					return this.enemyShipList[s];
+				}
+			}
+			return null;
 		},
 
 		/**
@@ -2231,11 +2582,23 @@ function wrapper() { // wrapper for injection
 						   */
 		shipsAt: function (x, y) {
 			var ships = [];
+			var range = vgap.plugins["enemyShipListPlugin"].getTurnRange();
 
 			for (var es = 0; es < vgap.plugins["enemyShipListPlugin"].enemyShipList.length; es++) {
 				var ship = vgap.plugins["enemyShipListPlugin"].enemyShipList[es];
 
-				if ((vgap.plugins["enemyShipListPlugin"].drawSelection[0] || vgap.plugins["enemyShipListPlugin"].drawSelection[ship.ownerid]) && (!ship.visible) && (Math.dist(x, y, ship.x, ship.y) <= vgap.plugins["enemyShipListPlugin"].drawRadius)) {
+				var filterId = vgap.plugins["enemyShipListPlugin"].shipFilterId;
+				var selected = filterId ? (ship.id == filterId) : (vgap.plugins["enemyShipListPlugin"].drawSelection[0] || vgap.plugins["enemyShipListPlugin"].drawSelection[ship.ownerid]);
+				if (!selected || ship.visible)
+					continue;
+
+				//use the position the marker is drawn at: last sighting within the turn range
+				var sightings = vgap.plugins["enemyShipListPlugin"].getSightingsInRange(ship, range);
+				if (sightings.length == 0)
+					continue;
+				var last = sightings[sightings.length - 1];
+
+				if (Math.dist(x, y, last.x, last.y) <= vgap.plugins["enemyShipListPlugin"].drawRadius) {
 					ships.push(ship);
 				}
 			}
@@ -2286,6 +2649,10 @@ function wrapper() { // wrapper for injection
 			vgap.plugins["enemyShipListPlugin"].drawSelection[p] = false;
 		}
 		vgap.plugins["enemyShipListPlugin"].menuactive = false;
+		vgap.plugins["enemyShipListPlugin"].shipFilterId = 0;
+		vgap.plugins["enemyShipListPlugin"].showShipFilter = false;
+		vgap.plugins["enemyShipListPlugin"].turnFrom = null;
+		vgap.plugins["enemyShipListPlugin"].turnTo = 0;
 		$("#EnemyShipTool").remove();
 
 
