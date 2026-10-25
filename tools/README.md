@@ -3,7 +3,7 @@
 Scripts that tune the Build Predictor in `EnemyShips.js` (`estimatePhases`, `estimateRaceFocus`) on the complete games in `../CompleteGames`.
 They run the plugin's own estimator code against every build turn, so the scores show how the plugin itself performs.
 
-Requires Python 3 and Node.js. Generated files go to `data/` (not in git, about 100 MB for 9 games).
+Requires Python 3 and Node.js. Generated files go to `data/` (not in git, about 320 MB for 25 games).
 
 ## Retune after adding games
 
