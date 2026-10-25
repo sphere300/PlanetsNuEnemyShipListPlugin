@@ -344,7 +344,7 @@ function wrapper() { // wrapper for injection
 
 		//things that get saved to disk
 		enemyShipList: [],
-		scoreHistory: {},	//turn -> ownerid -> {c: capital ships, f: freighters, m: military score, s: score}
+		scoreHistory: {},	//turn -> ownerid -> {c: capital ships, f: freighters, m: military score, s: score, and their changes from the turn before: dc, df, dm, ds}
 		currentListTurn: 0,
 		firstListTurn: 0,
 		version: plugin_version,
@@ -387,6 +387,9 @@ function wrapper() { // wrapper for injection
 		estimateFreshWeight: 8,			//weight added per ship first seen in the build turn or the next
 		estimateFreshTurns: 2,			//turns after the build in which a first sighting counts as fresh
 		estimateOpeningFill: 0.25,		//fraction of the ship limit in use below which a build counts as the opening
+		//military score every player starts with (starbase with 100 defense and 20 fighters, homeworld with about 20 defense posts).
+		//The turn 1 scoreboard shows 0 instead, so the turn 2 change would count it as built.
+		startMilitary: 2110,
 		estimateEarlyFill: 0.5,			//fraction of the ship limit in use below which a build counts as early game
 		//how players build in each phase of the game, by how full the ship limit is. In the opening players build scouts and
 		//small cheap warships, then more and bigger warships, and close to the limit they trade minerals for strength.
@@ -2166,16 +2169,44 @@ function wrapper() { // wrapper for injection
 		 * Store the scoreboard of the loaded turn so the build predictor can compare turns
 		 */
 		recordScores: function () {
+			var plugin = this;
 			if (!vgap.scores || vgap.scores.length == 0)
 				return;
 
 			var snapshot = {};
 			for (var i = 0; i < vgap.scores.length; i++) {
 				var score = vgap.scores[i];
-				snapshot[score.ownerid] = { c: score.capitalships, f: score.freighters, m: score.militaryscore, s: score.inventoryscore };
+				//turn 2 often still shows the scoreboard of turn 1, which is no record of turn 2
+				if (score.turn != null && score.turn != vgap.game.turn)
+					return;
+				snapshot[score.ownerid] = plugin.scoreSnapshot(score);
 			}
 			this.scoreHistory[vgap.game.turn] = snapshot;
 			this.saveScoreHistory();
+		},
+
+		/**
+		 * Score history entry of a player from a scoreboard record
+		 */
+		scoreSnapshot: function (score) {
+			return {
+				c: score.capitalships, f: score.freighters, m: score.militaryscore, s: score.inventoryscore,
+				dc: score.shipchange, df: score.freighterchange, dm: score.militarychange, ds: score.inventorychange
+			};
+		},
+
+		/**
+		 * Check if a recorded scoreboard is a placeholder: turn 1, and often turn 2, show every player
+		 * without ships before the first scores are made
+		 * @param snapshot	ownerid -> score history entry
+		 */
+		isPlaceholderScores: function (snapshot) {
+			var owners = Object.keys(snapshot);
+			for (var o = 0; o < owners.length; o++) {
+				if (snapshot[owners[o]].c || snapshot[owners[o]].f)
+					return false;
+			}
+			return true;
 		},
 
 		/**
@@ -2210,7 +2241,7 @@ function wrapper() { // wrapper for injection
 					var score = data.scores[i];
 					if (!plugin.scoreHistory[score.turn])
 						plugin.scoreHistory[score.turn] = {};
-					plugin.scoreHistory[score.turn][score.ownerid] = { c: score.capitalships, f: score.freighters, m: score.militaryscore, s: score.inventoryscore };
+					plugin.scoreHistory[score.turn][score.ownerid] = plugin.scoreSnapshot(score);
 				}
 				plugin.saveScoreHistory();
 				plugin.showEnemyShipsView(8);
@@ -2263,7 +2294,7 @@ function wrapper() { // wrapper for injection
 			var turnKeys = Object.keys(this.scoreHistory);
 			for (var k = 0; k < turnKeys.length; k++) {
 				var t = parseInt(turnKeys[k], 10);
-				if (isNaN(t))
+				if (isNaN(t) || this.isPlaceholderScores(this.scoreHistory[turnKeys[k]]))
 					continue;
 				if (t < turn && (before == null || t > before))
 					before = t;
@@ -2922,14 +2953,27 @@ function wrapper() { // wrapper for injection
 		 * @return 			{turns (newest first), ships (by id)}
 		 */
 		getBuildHistory: function (ownerid) {
-			var recorded = [];
+			//turn -> score history entry of the player
+			var entries = {};
 			var turnKeys = Object.keys(this.scoreHistory);
 			for (var k = 0; k < turnKeys.length; k++) {
 				var turn = parseInt(turnKeys[k], 10);
-				if (!isNaN(turn) && this.scoreHistory[turnKeys[k]][ownerid]) {
-					recorded.push(turn);
+				if (!isNaN(turn) && this.scoreHistory[turnKeys[k]][ownerid] && !this.isPlaceholderScores(this.scoreHistory[turnKeys[k]])) {
+					entries[turn] = this.scoreHistory[turnKeys[k]][ownerid];
 				}
 			}
+			//a missing turn before a recorded one follows from the changes the scoreboard shows. The changes against
+			//turn 1 are against its empty scoreboard, so turn 1 is the start of the game instead.
+			var known = Object.keys(entries).map(function (t) { return parseInt(t, 10); });
+			for (var k = 0; k < known.length; k++) {
+				var now = entries[known[k]];
+				if (known[k] > 2 && !entries[known[k] - 1] && now.dm != null) {
+					entries[known[k] - 1] = { c: now.c - now.dc, f: now.f - now.df, m: now.m - now.dm, s: now.s - now.ds };
+				}
+			}
+			if (entries[2])
+				entries[1] = { c: 0, f: 0, m: this.startMilitary, start: true };
+			var recorded = Object.keys(entries).map(function (t) { return parseInt(t, 10); });
 			recorded.sort(function (a, b) { return a - b; });
 
 			var ships = [];
@@ -2946,12 +2990,12 @@ function wrapper() { // wrapper for injection
 			//a rise in warships or freighters means at least that many were built (losses in the same turn hide builds)
 			var turns = [];
 			for (var r = 0; r < recorded.length; r++) {
-				var now = this.scoreHistory[recorded[r]][ownerid];
+				var now = entries[recorded[r]];
 				var row = { turn: recorded[r], fromTurn: recorded[r], score: now.s, military: now.m, capitals: now.c, freighters: now.f, firstSeen: [] };
 				if (r > 0) {
-					var prev = this.scoreHistory[recorded[r - 1]][ownerid];
+					var prev = entries[recorded[r - 1]];
 					row.fromTurn = recorded[r - 1] + 1;
-					row.scoreChange = now.s - prev.s;
+					row.scoreChange = prev.s != null ? now.s - prev.s : null;
 					row.militaryChange = now.m - prev.m;
 					row.capitalChange = now.c - prev.c;
 					row.freighterChange = now.f - prev.f;
@@ -2962,7 +3006,9 @@ function wrapper() { // wrapper for injection
 					if (ships[i].firstSeen == row.turn)
 						row.firstSeen.push(ships[i].ship.id);
 				}
-				turns.push(row);
+				//the start of the game only serves as the base of turn 2
+				if (!now.start)
+					turns.push(row);
 			}
 			turns.reverse();
 

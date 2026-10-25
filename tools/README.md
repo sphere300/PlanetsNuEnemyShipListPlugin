@@ -24,6 +24,8 @@ Extraction reads several GB of turn files and takes a few minutes; `extract.py -
 ## How scores are measured
 
 - Only build turns before the ship limit count; after it the plugin does not estimate builds automatically.
+- Turn 2 is measured as the plugin sees it: from the starting military (`startMilitary`) rather than the empty turn 1
+  scoreboard, and from the turn 3 changes when the turn 2 scoreboard still shows turn 1.
 - Each game is scored with a focus table learned from the other games only (leave one game out), so the scores show
   how well the plugin predicts a game it has not seen.
 - `top1`: the top prediction has exactly the hulls built. `ships right in top1`: share of the built ships whose hull is in the
