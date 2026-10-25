@@ -17,7 +17,7 @@
 
 /*
 Change log:
-1.41   Added a 'Build Predictor' tab. Records the scoreboard every turn and shows per player the changes in score, military score, warships and freighters, with the ships first seen each turn and a summary of the player's known and missing ships. A build estimate lists ship configurations that could explain a turn's military score change, tuned on complete games: it follows each race's usual fighters, sweepers and scouts in each phase of the game (opening, early, close to the ship limit), expects part of the change to go to ammo and defense, and stops at the ship limit (the manual build still works). A scrolling list shows every configuration ordered by how close it comes to the change.
+1.41   Added a 'Build Predictor' tab. Records the scoreboard every turn and shows per player the changes in score, military score, warships and freighters, with the ships first seen each turn and a summary of the player's known and missing ships. A build estimate lists ship configurations that could explain a turn's military score change, tuned on complete games: it follows each race's usual fighters, sweepers and scouts in each phase of the game (opening, early, close to the ship limit), shows the starbase builds (starbase fighters, defense posts, loaded ammo) that make up the rest of the change, shows the starting build on turn 2, and stops at the ship limit (the manual build, which also takes starbase builds, still works). A scrolling list shows every configuration ordered by how close it comes to the change.
 1.40  Added a new feature to see the historical movement of enemy ships. You can filter by all, by player, or by ship. You can show the path range for specific time windows and fixed one issue with the origonal plugins icon
 1.39   Updated include for new URL [2018-12-22]
 1.38   Updated to recent changes in mobile client [2018-12-22]
@@ -2594,14 +2594,143 @@ function wrapper() { // wrapper for injection
 			return { ranked: ranked, closest: closest.slice(0, this.estimateClosestResults), phase: priors.phase, focus: priors.focus };
 		},
 
+		//starbase builds that make up the military change the ships leave unexplained, from complete games before the ship limit:
+		//	value: military score points each; share: turns with such a build; mean: points such a build is usually worth
+		//	(exponential fit to the median)
+		estimateStarbaseItems: {
+			fighters: { name: "starbase fighters", value: 62.5, share: 0.12, mean: 2525 },
+			starbaseDefense: { name: "starbase defense posts", value: 7.5, share: 0.04, mean: 1125 },
+			planetDefense: { name: "planetary defense posts", value: 5.5, share: 0.53, mean: 301 },
+			ammo: { share: 0.38, mean: 1333 }	//torpedoes or fighters loaded on ships
+		},
+
 		/**
-		 * Names of the freighter every race builds on turn 2: a Medium Deep Space Freighter with Transwarp engines
+		 * The likeliest starbase builds that make up the military change the ships leave unexplained: starbase fighters,
+		 * starbase and planetary defense posts and ammo loaded on ships (torpedoes, or fighters for a carrier fleet).
+		 * Each kind of build costs more the rarer it is and the more points it is worth next to its usual size
+		 * (estimateStarbaseItems), and the cheapest mix that makes up the change wins.
+		 * @param ownerid	player id
+		 * @param ships		predicted warships [{hull, torpedo}]
+		 * @param rest		military change the ships leave unexplained
+		 * @param turn		build turn
+		 * @return 			{items: [{name, count, value}], value} or null if nothing is left to explain
+		 */
+		estimateStarbaseBuilds: function (ownerid, ships, rest, turn) {
+			if (!(rest > 0))
+				return null;
+			var I = this.estimateStarbaseItems;
+			var starbases = Math.max(1, getNumForPlayer(ownerid, "starbases"));
+			var ammo = this.getLoadedAmmo(ownerid, ships, turn);
+			//-log likelihood of a build worth 'points': how often the kind is built, times an exponential in its size
+			var cost = function (item, points) {
+				return points > 0 ? -Math.log(item.share) + Math.log(item.mean) + points / item.mean : 0;
+			};
+
+			var best = null;
+			var maxFighters = Math.min(60 * starbases, Math.floor(rest / I.fighters.value));
+			//planetary defense posts cost the most per point, so next to other builds they only fill the last few points;
+			//on their own they can make up a few hundred posts
+			var maxPlanet = Math.min(400, Math.floor(rest / I.planetDefense.value));
+			for (var f = 0; f <= maxFighters; f++) {
+				for (var p = 0; p <= (f == 0 ? maxPlanet : Math.min(maxPlanet, 40)); p++) {
+					var r = rest - f * I.fighters.value - p * I.planetDefense.value;
+					if (r < -0.5)
+						break;
+					//the rest goes to ammo, then starbase defense posts
+					var a = ammo && r >= ammo.value ? Math.floor(r / ammo.value) : 0;
+					var options = a > 0 ? [0, a] : [0];
+					for (var o = 0; o < options.length; o++) {
+						var left = r - options[o] * (ammo ? ammo.value : 0);
+						var b = Math.min(200 * starbases, Math.max(0, Math.round(left / I.starbaseDefense.value)));
+						var err = Math.max(0, Math.abs(left - b * I.starbaseDefense.value) - 0.5);
+						var score = 10 * err + cost(I.fighters, f * I.fighters.value) + cost(I.planetDefense, p * I.planetDefense.value) +
+							cost(I.starbaseDefense, b * I.starbaseDefense.value) + cost(I.ammo, options[o] * (ammo ? ammo.value : 0));
+						if (!best || score < best.score)
+							best = { score: score, f: f, p: p, a: options[o], b: b };
+					}
+				}
+			}
+			var items = [
+				{ name: I.fighters.name, count: best.f, value: best.f * I.fighters.value },
+				{ name: ammo ? ammo.name : "", count: best.a, value: best.a * (ammo ? ammo.value : 0) },
+				{ name: I.starbaseDefense.name, count: best.b, value: best.b * I.starbaseDefense.value },
+				{ name: I.planetDefense.name, count: best.p, value: best.p * I.planetDefense.value }
+			].filter(function (item) { return item.count > 0; });
+			var value = 0;
+			for (var i = 0; i < items.length; i++)
+				value += items[i].value;
+			return { items: items, value: value };
+		},
+
+		/**
+		 * Ammo a player likely loads on ships: fighters (125 points each) when the predicted ships or else the fleet
+		 * known by the build turn are mostly carriers, otherwise the torpedo they carry most often (1 point per megacredit)
+		 * @return 		{name, value} or null if neither carriers nor torpedo ships are known
+		 */
+		getLoadedAmmo: function (ownerid, ships, turn) {
+			var carriers = 0, torpedoShips = 0, torpedo = null;
+			for (var s = 0; s < ships.length; s++) {
+				if (ships[s].hull.fighterbays > 0)
+					carriers++;
+				else if (ships[s].torpedo) {
+					torpedoShips++;
+					torpedo = ships[s].torpedo;
+				}
+			}
+			if (carriers + torpedoShips == 0) {
+				for (var s = 0; s < this.enemyShipList.length; s++) {
+					var ship = this.enemyShipList[s];
+					var hull = ship.ownerid == ownerid && this.getSeenTurns(ship).first <= turn ? vgap.getHull(ship.hullid) : null;
+					if (hull && hull.fighterbays > 0)
+						carriers++;
+					else if (hull && ship.torps > 0 && ship.torpedoid > 0)
+						torpedoShips++;
+				}
+				torpedo = this.getFleetTorpedo(ownerid, turn);
+			}
+			if (carriers > 0 && carriers >= torpedoShips)
+				return { name: "fighters loaded", value: 125 };
+			if (torpedo && torpedo.torpedocost > 0)
+				return { name: torpedo.name + " torpedoes loaded", value: torpedo.torpedocost };
+			return null;
+		},
+
+		/**
+		 * The torpedo a player's ships known by a turn carry most often
+		 * @return 		torpedo, null if no torpedo ship is known
+		 */
+		getFleetTorpedo: function (ownerid, turn) {
+			var counts = {};
+			var best = 0;
+			for (var s = 0; s < this.enemyShipList.length; s++) {
+				var ship = this.enemyShipList[s];
+				if (ship.ownerid != ownerid || !(ship.torpedoid > 0) || !(ship.torps > 0) || this.getSeenTurns(ship).first > turn)
+					continue;
+				counts[ship.torpedoid] = (counts[ship.torpedoid] || 0) + 1;
+				if (!best || counts[ship.torpedoid] > counts[best])
+					best = ship.torpedoid;
+			}
+			return best ? vgap.getTorpedo(best) : null;
+		},
+
+		/**
+		 * Html text of starbase builds from estimateStarbaseBuilds
+		 */
+		starbaseBuildsText: function (builds) {
+			if (!builds)
+				return "---";
+			return builds.items.map(function (item) { return item.count + " " + item.name + " (" + Math.round(item.value) + ")"; }).join("<br>");
+		},
+
+		/**
+		 * Names of the usual starting freighter: the one ship every player builds on turn 1 appears on turn 2, and
+		 * as a freighter it is a Large Deep Space Freighter with Transwarp engines (54 of 62 in complete games)
 		 * @return 		{hull, engine}
 		 */
 		getStarterFreighter: function () {
 			var hull = null;
 			for (var h = 0; h < vgap.hulls.length; h++) {
-				if (/medium deep space freighter/i.test(vgap.hulls[h].name))
+				if (/large deep space freighter/i.test(vgap.hulls[h].name))
 					hull = vgap.hulls[h];
 			}
 			var engine = null;
@@ -2609,7 +2738,7 @@ function wrapper() { // wrapper for injection
 				if (/transwarp/i.test(vgap.engines[e].name))
 					engine = vgap.engines[e];
 			}
-			return { hull: hull ? hull.name : "Medium Deep Space Freighter", engine: engine ? engine.name : "Transwarp Drive" };
+			return { hull: hull ? hull.name : "Large Deep Space Freighter", engine: engine ? engine.name : "Transwarp Drive" };
 		},
 
 		/**
@@ -2653,12 +2782,16 @@ function wrapper() { // wrapper for injection
 			html += "</select> " + row.newCapitals + " new warship" + (row.newCapitals == 1 ? "" : "s") + ", " +
 				row.newFreighters + " new freighter" + (row.newFreighters == 1 ? "" : "s") + ", military" + plugin.formatChange(row.militaryChange) + "</p>";
 
-			//every race gets the same freighter on turn 2
+			//the one ship every player builds on turn 1 appears on turn 2
 			var unknownFreighters = row.newFreighters;
-			if (row.fromTurn <= 2 && row.turn >= 2 && row.newFreighters > 0) {
-				var starter = plugin.getStarterFreighter();
-				html += "<p style='color:" + color + "'>Known build: 1x " + starter.hull + " with " + starter.engine + " engines (every race's turn 2 freighter).</p>";
-				unknownFreighters--;
+			if (row.fromTurn <= 2 && row.turn >= 2) {
+				html += "<p style='color:" + color + "'>Starting build: every player builds one ship on turn 1, which appears on turn 2.";
+				if (row.newFreighters > 0) {
+					var starter = plugin.getStarterFreighter();
+					html += " Likely starting freighter: 1x " + starter.hull + " with " + starter.engine + " engines (54 of the 62 starting freighters in complete games).";
+					unknownFreighters--;
+				}
+				html += "</p>";
 			}
 			if (unknownFreighters > 0) {
 				html += "<p>" + unknownFreighters + " freighter" + (unknownFreighters == 1 ? "" : "s") + " built. Freighters do not count toward the military score, so their hulls cannot be estimated.</p>";
@@ -2672,7 +2805,9 @@ function wrapper() { // wrapper for injection
 				"Each race focuses on a few hulls for fighting, sweeping mines and scouting, and the mix shifts through the game: scouts and small warships in the opening, " +
 				"more and bigger warships close to the ship limit. The race's usual builds lead until enough of the fleet has been seen, then the hulls and weapons seen, " +
 				"and hulls first seen right after the turn, count most. Once the ship limit is reached builds are not estimated automatically; the manual build still works. " +
-				"The second list holds every configuration the search kept, closest to the military change first.</p>";
+				"The second list holds every configuration the search kept, closest to the military change first. " +
+				"For each configuration, the starbase builds show one way to make up the rest of the change: starbase fighters first, the most common starbase build, " +
+				"torpedoes loaded once the starbase fighters are full, and defense posts for the small rest.</p>";
 
 			plugin.manualTarget = row.militaryChange;
 
@@ -2680,6 +2815,11 @@ function wrapper() { // wrapper for injection
 			html += "<div style='display:flex; flex-wrap:wrap; align-items:flex-start; gap:32px;'><div>";
 			if (!(row.newCapitals > 0)) {
 				html += "<p>No new warships this turn.</p>";
+				var builds = plugin.estimateStarbaseBuilds(player.id, [], row.militaryChange, row.turn);
+				if (builds) {
+					html += "<p style='color:" + color + "'>Starbase builds that make up the military change:<br>" + plugin.starbaseBuildsText(builds) +
+						"<br>Total " + Math.round(builds.value) + plugin.formatChange(Math.round(builds.value - row.militaryChange)) + "</p>";
+				}
 			} else if (!(row.militaryChange > 0)) {
 				html += "<p>The military score did not rise this turn, so the new ships cannot be estimated (losses hide their value).</p>";
 			} else {
@@ -2714,6 +2854,13 @@ function wrapper() { // wrapper for injection
 			}
 			if (estimate.ranked.length == 0)
 				return html + "<p>No set of " + row.newCapitals + " warship" + (row.newCapitals == 1 ? "" : "s") + " of this race fits a military change this small.</p>";
+			//the starbase builds that make up the rest of the change
+			var addStarbase = function (results) {
+				for (var r = 0; r < results.length; r++)
+					results[r].starbase = plugin.estimateStarbaseBuilds(ownerid, results[r].ships, -results[r].diff, row.turn);
+			};
+			addStarbase(estimate.ranked);
+			addStarbase(estimate.closest);
 			html += "<h4>Predicted builds</h4>";
 			html += plugin.buildConfigTableHtml(estimate.ranked, color);
 			html += "<h4>Closest to the military change (" + estimate.closest.length + ")</h4>";
@@ -2722,14 +2869,15 @@ function wrapper() { // wrapper for injection
 		},
 
 		/**
-		 * Html table of ship configurations, identical ships listed once with a count
-		 * @param results	[{ships, value, diff}] from estimateBuilds
+		 * Html table of ship configurations, identical ships listed once with a count, with the starbase builds
+		 * that make up the rest of the military change
+		 * @param results	[{ships, value, diff, starbase}] from estimateBuilds, starbase from estimateStarbaseBuilds
 		 * @param color		player color
 		 */
 		buildConfigTableHtml: function (results, color) {
 			var plugin = this;
 			var html = "<table class='BuildPredictTable' border='0'><thead><tr>" +
-				"<th>Ships</th><th>Role</th><th>Engine</th><th>Beams</th><th>Torpedoes</th><th>Est. Military</th><th>Difference</th>" +
+				"<th>Ships</th><th>Role</th><th>Engine</th><th>Beams</th><th>Torpedoes</th><th>Ships Military</th><th>Starbase Builds</th><th>Difference</th>" +
 				"</tr></thead><tbody>";
 			for (var r = 0; r < results.length; r++) {
 				//identical ships are listed once with a count, one line per kind of ship
@@ -2752,7 +2900,8 @@ function wrapper() { // wrapper for injection
 					column(function (g) { return g.ship.beam ? g.ship.beam.name : "---"; }) +
 					column(function (g) { return g.ship.torpedo ? g.ship.torpedo.name : "---"; }) +
 					"<td>" + results[r].value + "</td>" +
-					"<td>" + plugin.formatChange(results[r].diff) + "</td>" +
+					"<td>" + plugin.starbaseBuildsText(results[r].starbase) + "</td>" +
+					"<td>" + plugin.formatChange(Math.round(results[r].diff + (results[r].starbase ? results[r].starbase.value : 0))) + "</td>" +
 					"</tr>";
 			}
 			html += "</tbody></table>";
@@ -2760,7 +2909,7 @@ function wrapper() { // wrapper for injection
 		},
 
 		/**
-		 * Fill the manual build calculator: pick a hull, components, ammo and number of ships and see
+		 * Fill the manual build calculator: pick a hull, components, ammo, number of ships and starbase builds and see
 		 * the military score it adds, compared to the selected turn's military score change.
 		 * Changing values updates the result in place; changing the hull rebuilds the calculator.
 		 * @param ownerid	player id
@@ -2783,7 +2932,7 @@ function wrapper() { // wrapper for injection
 					engineid: first(priors.engines, vgap.engines[0]).id,
 					beamid: first(priors.beams, vgap.beams[0]).id, beams: hull.beams,
 					torpedoid: first(priors.torpedos, vgap.torpedos[0]).id, launchers: hull.launchers,
-					ammo: 0, count: 1
+					ammo: 0, count: 1, baseFighters: 0, baseDefense: 0, planetDefense: 0
 				};
 				plugin.manualBuild = state;
 			}
@@ -2829,6 +2978,9 @@ function wrapper() { // wrapper for injection
 			var launcherCount = makeNumber(state.launchers, hull.launchers);
 			var ammoCount = makeNumber(state.ammo);
 			var shipCount = makeNumber(state.count);
+			var baseFighters = makeNumber(state.baseFighters || 0, 60);
+			var baseDefense = makeNumber(state.baseDefense || 0, 200);
+			var planetDefense = makeNumber(state.planetDefense || 0);
 
 			var table = $("<table class='BuildPredictTable' border='0'></table>").appendTo(container);
 			var addRow = function (label, controls) {
@@ -2850,6 +3002,9 @@ function wrapper() { // wrapper for injection
 				addRow("Loaded fighters (" + hull.fighterbays + " bays)", [ammoCount]);
 			}
 			addRow("Number of ships", [shipCount]);
+			addRow("Starbase fighters", [baseFighters]);
+			addRow("Starbase defense posts", [baseDefense]);
+			addRow("Planetary defense posts", [planetDefense]);
 
 			var result = $("<table class='BuildPredictTable' border='0' style='margin-top:8px;'></table>").appendTo(container);
 
@@ -2865,6 +3020,9 @@ function wrapper() { // wrapper for injection
 				state.launchers = hull.launchers > 0 ? clamp(launcherCount, hull.launchers) : 0;
 				state.ammo = (hull.launchers > 0 || hull.fighterbays > 0) ? clamp(ammoCount) : 0;
 				state.count = clamp(shipCount);
+				state.baseFighters = clamp(baseFighters, 60);
+				state.baseDefense = clamp(baseDefense, 200);
+				state.planetDefense = clamp(planetDefense);
 
 				var engine = vgap.getEngine(state.engineid);
 				var beam = vgap.getBeam(state.beamid);
@@ -2889,14 +3047,19 @@ function wrapper() { // wrapper for injection
 				}
 				if (!warship)
 					perShip = 0;
-				var total = perShip * state.count;
+				//starbase builds: 62.5 per starbase fighter, 7.5 per starbase defense post, 5.5 per planetary defense post
+				var starbase = 62.5 * state.baseFighters + 7.5 * state.baseDefense + 5.5 * state.planetDefense;
+				var total = perShip * state.count + starbase;
 				$("<tr><td><strong>Per ship</strong></td><td><strong>" + perShip + "</strong></td></tr>").appendTo(result);
-				$("<tr><td><strong>Total (" + state.count + "x)</strong></td><td><strong>" + total + "</strong></td></tr>").appendTo(result);
+				$("<tr><td>Ships (" + state.count + "x)</td><td>" + perShip * state.count + "</td></tr>").appendTo(result);
+				if (starbase > 0)
+					$("<tr><td>Starbase builds</td><td>" + starbase + "</td></tr>").appendTo(result);
+				$("<tr><td><strong>Total</strong></td><td><strong>" + total + "</strong></td></tr>").appendTo(result);
 				if (!warship)
 					$("<tr><td colspan='2'>Freighters do not count toward the military score.</td></tr>").appendTo(result);
 				if (plugin.manualTarget != null) {
 					$("<tr><td>Turn military change</td><td>" + plugin.manualTarget + "</td></tr>").appendTo(result);
-					$("<tr><td>Difference</td><td>" + plugin.formatChange(total - plugin.manualTarget) + "</td></tr>").appendTo(result);
+					$("<tr><td>Difference</td><td>" + plugin.formatChange(Math.round(total - plugin.manualTarget)) + "</td></tr>").appendTo(result);
 				}
 			};
 

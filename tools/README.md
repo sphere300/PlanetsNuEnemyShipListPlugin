@@ -41,6 +41,7 @@ Extraction reads several GB of turn files and takes a few minutes; `extract.py -
 | `node misses.js <phase> [ships]` | wrong top predictions with what was built, and the most common mix-ups |
 | `python races.py` | top hulls each race built per phase, with their usual outfit |
 | `python roles.py` | share of fighters, sweepers, scouts and utility ships per race and phase |
+| `node starbase.js` | how well the starbase builds (`estimateStarbaseBuilds`, `estimateStarbaseItems`) make up the rest of the military change, and which kinds of build they pick |
 | `python ratio.py` | how much of the military change the ships built explain (source of the `fit` arrays) |
 | `python phases.py` | hull size and component tech of the ships built, by how full the ship limit was |
 
