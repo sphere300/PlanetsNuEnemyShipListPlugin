@@ -17,7 +17,7 @@
 
 /*
 Change log:
-1.41   Added a 'Build Predictor' tab. Records the scoreboard every turn and shows per player the changes in score, military score, warships and freighters, with the ships first seen each turn and a summary of the player's known and missing ships. A build estimate lists ship configurations that could explain a turn's military score change, tuned on complete games: it follows each race's usual fighters, sweepers and scouts in each phase of the game (opening, early, close to the ship limit), shows the starbase builds (starbase fighters, defense posts, loaded ammo) that make up the rest of the change, shows the starting build on turn 2, and stops at the ship limit (the manual build, which also takes starbase builds, still works). A scrolling list shows every configuration ordered by how close it comes to the change.
+1.41   Added a 'Build Predictor' tab. Records the scoreboard every turn and shows per player the changes in score, military score, warships and freighters, with the ships first seen each turn and a summary of the player's known and missing ships. A build estimate lists ship configurations that could explain a turn's military score change, tuned on complete games: it follows each race's usual fighters, sweepers and scouts in each phase of the game (opening, early, close to the ship limit), shows the starbase builds (starbase fighters, defense posts, loaded ammo) that make up the rest of the change, shows the starting build on turn 2 and lists every player's starting freighter until it is seen, lets a configuration be stored as the predicted build, listed and counted with the ships seen but marked as predicted until a matching ship is seen, and stops at the ship limit (the manual build, which also takes starbase builds, still works). A manual build can be stored as a custom predicted build.
 1.40  Added a new feature to see the historical movement of enemy ships. You can filter by all, by player, or by ship. You can show the path range for specific time windows and fixed one issue with the origonal plugins icon
 1.39   Updated include for new URL [2018-12-22]
 1.38   Updated to recent changes in mobile client [2018-12-22]
@@ -344,6 +344,9 @@ function wrapper() { // wrapper for injection
 
 		//things that get saved to disk
 		enemyShipList: [],
+		//builds chosen in the build predictor: ship entries like the list's, without id or position, marked predicted,
+		//with the build turn (predictedTurn) and the last list turn when they were chosen (storedListTurn)
+		predictedShips: [],
 		scoreHistory: {},	//turn -> ownerid -> {c: capital ships, f: freighters, m: military score, s: score, and their changes from the turn before: dc, df, dm, ds}
 		currentListTurn: 0,
 		firstListTurn: 0,
@@ -379,16 +382,16 @@ function wrapper() { // wrapper for injection
 		scoreVisibleTurns: 15,	//rows visible in the build predictor score table before it scrolls
 		estimateTurn: null,		//turn shown in the build estimate, null = latest turn with new warships
 		estimateResults: 8,		//configurations listed in the build estimate
-		estimateClosestResults: 100,	//configurations listed by closeness to the military change
-		estimateClosestVisible: 12,		//rows visible in the closest configurations table before it scrolls
+		estimateClosestResults: 100,	//configurations returned by closeness to the military change (used by the tuning scripts)
 		//build estimate tuning, fitted on complete games
 		estimateSearchWidth: 200,		//partial ship sets kept per step of the search
 		estimateRaceHullWeight: 0.5,	//weight of a race hull never seen in the player's fleet; each seen ship adds 1
 		estimateFreshWeight: 8,			//weight added per ship first seen in the build turn or the next
 		estimateFreshTurns: 2,			//turns after the build in which a first sighting counts as fresh
 		estimateOpeningFill: 0.25,		//fraction of the ship limit in use below which a build counts as the opening
-		//military score every player starts with (starbase with 100 defense and 20 fighters, homeworld with about 20 defense posts).
-		//The turn 1 scoreboard shows 0 instead, so the turn 2 change would count it as built.
+		//military score every player starts with (starbase with 100 defense and 20 fighters, homeworld with about 20 defense posts),
+		//next to one Medium Deep Space Freighter with Transwarp engines. The turn 1 scoreboard shows 0 instead, so the turn 2
+		//change would count them as built.
 		startMilitary: 2110,
 		estimateEarlyFill: 0.5,			//fraction of the ship limit in use below which a build counts as early game
 		//how players build in each phase of the game, by how full the ship limit is. In the opening players build scouts and
@@ -476,6 +479,7 @@ function wrapper() { // wrapper for injection
 		},
 		manualBuild: null,		//last choices in the manual build calculator
 		manualTarget: null,		//military score change the manual build is compared to
+		manualTurn: null,		//build turn the manual build can be stored as the predicted build of
 
 		colorsA: ["#F0F8FF", "#32CD32", "#CD5C5C", "#FFC0CB", "#98FB98", "#C0C0C0", "#FFFF00", "#EE82EE", "#D3D3D3", "#B0E0E6", "#87CEFA", "#7B68EE", "#F4A460", "#D2B48C", "#FF6347", "#F5DEB3", "#F08080", "#2F4F4F", "#008080", "#B22222", "#808000", "#9370DB", "#00FF00", "#4B0082", "#D2B48C", "#9ACD32", "#DAA520", "#F0F8FF", "#6B8E23", "#FF4500"],
 		//
@@ -502,6 +506,7 @@ function wrapper() { // wrapper for injection
 
 		initializeDefaults: function () {
 			this.enemyShipList = [];
+			this.predictedShips = [];
 			this.scoreHistory = {};
 			this.firstListTurn = vgap.game.turn;
 			this.currentListTurn = vgap.game.turn - 1;
@@ -570,6 +575,8 @@ function wrapper() { // wrapper for injection
 
 				var stored_scores = localStorage.getItem(this.storage_path + "scorehistory");
 				this.scoreHistory = (stored_scores != null) ? JSON.parse(stored_scores) : {};
+				var stored_predicted = localStorage.getItem(this.storage_path + "predicted");
+				this.predictedShips = (stored_predicted != null) ? JSON.parse(stored_predicted) : [];
 
 				if (stored_version != null && stored_list != null && stored_turn != null && first_turn != null) {
 
@@ -699,6 +706,7 @@ function wrapper() { // wrapper for injection
 			localStorage.removeItem(key_prefix + "race");
 			localStorage.removeItem(key_prefix + "game_name");
 			localStorage.removeItem(key_prefix + "scorehistory");
+			localStorage.removeItem(key_prefix + "predicted");
 
 			if (game_id == vgap.gameId && player_slot == vgap.player.id) {
 				vgap.plugins["enemyShipListPlugin"].initializeDefaults();
@@ -1002,6 +1010,7 @@ function wrapper() { // wrapper for injection
 			this.currentListTurn = vgap.game.turn;
 
 			this.saveEnemyShipList();
+			this.reconcilePredictions();
 
 		},
 
@@ -1202,6 +1211,10 @@ function wrapper() { // wrapper for injection
 						capitalships_in_list++;
 					}
 				}
+				//predicted builds count like ships in the list
+				var predictedCounts = vgap.plugins["enemyShipListPlugin"].countPredicted(player.id);
+				capitalships_in_list += predictedCounts.capitals;
+				freighters_in_list += predictedCounts.freighters;
 			}
 
 
@@ -1338,6 +1351,10 @@ function wrapper() { // wrapper for injection
 							data_size += item.length * 2; //each symbol is 2 bytes on disk
 						}
 						item = localStorage.getItem("EnemyShipListPlugin." + game_id + "." + player_slot + ".scorehistory");
+						if (item != null) {
+							data_size += item.length * 2; //each symbol is 2 bytes on disk
+						}
+						item = localStorage.getItem("EnemyShipListPlugin." + game_id + "." + player_slot + ".predicted");
 						if (item != null) {
 							data_size += item.length * 2; //each symbol is 2 bytes on disk
 						}
@@ -1611,6 +1628,10 @@ function wrapper() { // wrapper for injection
 						}
 					}
 					var race = vgap.getRace(player.raceid);
+					var predictedCounts = vgap.plugins["enemyShipListPlugin"].countPredicted(player.id);
+					capitalships_in_list += predictedCounts.capitals;
+					freighters_in_list += predictedCounts.freighters;
+					var predictedNote = function (n) { return n > 0 ? " <span style='font-style:italic' title='Predicted builds from the build predictor'>(" + n + " predicted)</span>" : ""; };
 
 					//console.log("Player: " + player.id + " playing race: " + race.shortname + " and name: " + player.username);
 
@@ -1620,8 +1641,8 @@ function wrapper() { // wrapper for injection
 					html += "<td style='color:" + color + "'>" + player.id + "</td>";
 					html += "<td style='color:" + color + "'>" + player.username + "</td>";
 					html += "<td style='color:" + color + "'>" + race.shortname + "</td>";
-					html += "<td style='color:" + color + "'> <div style='display: none;'>" + (capitalships_in_list / capitalships_total) + "</div>" + capitalships_in_list + " / " + capitalships_total + "</td>";
-					html += "<td style='color:" + color + "'> <div style='display: none;'>" + (freighters_in_list / freighters_total) + "</div>" + freighters_in_list + " / " + freighters_total + "</td>";
+					html += "<td style='color:" + color + "'> <div style='display: none;'>" + (capitalships_in_list / capitalships_total) + "</div>" + capitalships_in_list + " / " + capitalships_total + predictedNote(predictedCounts.capitals) + "</td>";
+					html += "<td style='color:" + color + "'> <div style='display: none;'>" + (freighters_in_list / freighters_total) + "</div>" + freighters_in_list + " / " + freighters_total + predictedNote(predictedCounts.freighters) + "</td>";
 					html += "<td style='color:" + color + "'>" + (freighters_total + capitalships_total) + "</td>";
 					html += "</tr>";
 
@@ -2073,6 +2094,29 @@ function wrapper() { // wrapper for injection
 				}
 			}
 
+			//predicted builds, listed like sightings but marked as predicted
+			var predicted = vgap.plugins["enemyShipListPlugin"].getAllPredicted();
+			for (var pi = 0; pi < predicted.length; pi++) {
+				var ship = predicted[pi];
+				if (view == 0 && ship.ownerid == vgap.player.id)
+					continue;
+				if (view == 1 && (!vgap.alliedTo(ship.ownerid) || ship.ownerid == vgap.player.id))
+					continue;
+				if (view == 2 && (vgap.alliedTo(ship.ownerid) || ship.ownerid == vgap.player.id))
+					continue;
+				if (view == 3 && ship.ownerid != vgap.plugins["enemyShipListPlugin"].playerFilterId)
+					continue;
+				var rowHtml = vgap.plugins["enemyShipListPlugin"].predictedShipRowHtml(ship);
+				if (view == 3 && vgap.plugins["enemyShipListPlugin"].isFreighter(ship)) {
+					$(rowHtml).appendTo("#FreighterRows");
+					freighter_count++;
+				} else {
+					$(rowHtml).appendTo("#ShipRows");
+					if (view == 3)
+						war_count++;
+				}
+			}
+
 			if (view == 3 && vgap.plugins["enemyShipListPlugin"].includeUnknown) {
 
 				var player = vgap.getPlayer(vgap.plugins["enemyShipListPlugin"].playerFilterId);
@@ -2394,8 +2438,9 @@ function wrapper() { // wrapper for injection
 			}
 
 			var engines = {}, beams = {}, torpedos = {};
-			for (var s = 0; s < this.enemyShipList.length; s++) {
-				var ship = this.enemyShipList[s];
+			var known = this.getKnownShips(turn);
+			for (var s = 0; s < known.length; s++) {
+				var ship = known[s];
 				if (ship.ownerid != ownerid || ship.id < 0)
 					continue;
 				var shipHull = vgap.getHull(ship.hullid);
@@ -2678,8 +2723,9 @@ function wrapper() { // wrapper for injection
 				}
 			}
 			if (carriers + torpedoShips == 0) {
-				for (var s = 0; s < this.enemyShipList.length; s++) {
-					var ship = this.enemyShipList[s];
+				var known = this.getKnownShips(turn);
+				for (var s = 0; s < known.length; s++) {
+					var ship = known[s];
 					var hull = ship.ownerid == ownerid && this.getSeenTurns(ship).first <= turn ? vgap.getHull(ship.hullid) : null;
 					if (hull && hull.fighterbays > 0)
 						carriers++;
@@ -2702,8 +2748,9 @@ function wrapper() { // wrapper for injection
 		getFleetTorpedo: function (ownerid, turn) {
 			var counts = {};
 			var best = 0;
-			for (var s = 0; s < this.enemyShipList.length; s++) {
-				var ship = this.enemyShipList[s];
+			var known = this.getKnownShips(turn);
+			for (var s = 0; s < known.length; s++) {
+				var ship = known[s];
 				if (ship.ownerid != ownerid || !(ship.torpedoid > 0) || !(ship.torps > 0) || this.getSeenTurns(ship).first > turn)
 					continue;
 				counts[ship.torpedoid] = (counts[ship.torpedoid] || 0) + 1;
@@ -2723,9 +2770,342 @@ function wrapper() { // wrapper for injection
 		},
 
 		/**
+		 * Seen ships and predicted builds together, as the fleet known before a build turn
+		 * @param turn		build turn: predicted builds of this turn or later are left out, so a stored prediction does
+		 * 					not count toward its own turn; undefined to keep all
+		 * @return 			list of ship entries
+		 */
+		getKnownShips: function (turn) {
+			var predicted = this.getAllPredicted().filter(function (ship) { return turn == null || ship.predictedTurn < turn; });
+			return this.enemyShipList.concat(predicted);
+		},
+
+		/**
+		 * Stored predicted builds and the starting freighters not seen yet
+		 */
+		getAllPredicted: function () {
+			return this.predictedShips.concat(this.getStartingShips());
+		},
+
+		/**
+		 * The freighter every player starts with on turn 1 (a Medium Deep Space Freighter with Transwarp engines in all
+		 * complete games), as a predicted ship for each player whose starting freighter is not in the list. Starting ships
+		 * get the lowest ids, one per player, so a seen Medium Deep Space Freighter of the player with such an id is it.
+		 * @return 		predicted ship entries marked starting
+		 */
+		getStartingShips: function () {
+			var hull = null, engine = null;
+			if (!vgap.hulls || !vgap.engines || !vgap.players)
+				return [];
+			for (var h = 0; h < vgap.hulls.length; h++) {
+				if (/medium deep space freighter/i.test(vgap.hulls[h].name))
+					hull = vgap.hulls[h];
+			}
+			for (var e = 0; e < vgap.engines.length; e++) {
+				if (/transwarp/i.test(vgap.engines[e].name))
+					engine = vgap.engines[e];
+			}
+			if (!hull || !vgap.players)
+				return [];
+			var seen = {};
+			for (var s = 0; s < this.enemyShipList.length; s++) {
+				var ship = this.enemyShipList[s];
+				if (ship.hullid == hull.id && ship.id > 0 && ship.id <= vgap.players.length)
+					seen[ship.ownerid] = true;
+			}
+			var ships = [];
+			for (var p = 0; p < vgap.players.length; p++) {
+				var ownerid = vgap.players[p].id;
+				if (seen[ownerid])
+					continue;
+				var n = new ShipMin();
+				delete n.id;
+				n.name = hull.name;
+				n.ownerid = ownerid;
+				n.hullid = hull.id;
+				n.mass = hull.mass;
+				n.engineid = engine ? engine.id : 0;
+				n.ammo = -1;
+				n.damage = -1;
+				n.crew = -1;
+				n.predicted = true;
+				n.starting = true;
+				n.predictedTurn = 1;
+				ships.push(n);
+			}
+			return ships;
+		},
+
+		/**
+		 * Predicted builds of a player in a turn
+		 * @param freighters	true for freighters only, false for warships only, undefined for both
+		 */
+		getPredictedBuild: function (ownerid, turn, freighters) {
+			var plugin = this;
+			return this.predictedShips.filter(function (ship) {
+				return ship.ownerid == ownerid && ship.predictedTurn == turn && (freighters == null || plugin.isFreighter(ship) == freighters);
+			});
+		},
+
+		/**
+		 * Number of predicted warships and freighters of a player
+		 */
+		countPredicted: function (ownerid) {
+			var counts = { capitals: 0, freighters: 0 };
+			var predicted = this.getAllPredicted();
+			for (var p = 0; p < predicted.length; p++) {
+				if (predicted[p].ownerid != ownerid)
+					continue;
+				if (this.isFreighter(predicted[p]))
+					counts.freighters++;
+				else
+					counts.capitals++;
+			}
+			return counts;
+		},
+
+		/**
+		 * Key of a set of ships by hull and outfit, the same for the same ships in any order
+		 * @param ships		[{hullid, engineid, beamid, torpedoid}]
+		 */
+		predictionKey: function (ships) {
+			return ships.map(function (ship) { return ship.hullid + "|" + ship.engineid + "|" + (ship.beamid || 0) + "|" + (ship.torpedoid || 0); }).sort().join(",");
+		},
+
+		/**
+		 * predictionKey of a configuration from estimateBuilds
+		 */
+		resultKey: function (result) {
+			return this.predictionKey(result.ships.map(function (ship) {
+				return { hullid: ship.hull.id, engineid: ship.engine.id, beamid: ship.beam ? ship.beam.id : 0, torpedoid: ship.torpedo ? ship.torpedo.id : 0 };
+			}));
+		},
+
+		/**
+		 * A stored predicted build as a configuration like those of estimateBuilds, worth what its ships are built with
+		 * @param ships		predicted ships of a turn
+		 * @param target	military score change of the turn
+		 */
+		predictedResult: function (ships, target) {
+			var result = { ships: [], value: 0, custom: false };
+			for (var s = 0; s < ships.length; s++) {
+				var ship = ships[s];
+				var hull = vgap.getHull(ship.hullid);
+				var engine = vgap.getEngine(ship.engineid);
+				var beam = ship.beams > 0 ? vgap.getBeam(ship.beamid) : null;
+				var torpedo = ship.torps > 0 ? vgap.getTorpedo(ship.torpedoid) : null;
+				result.ships.push({ hull: hull, engine: engine, beam: beam, torpedo: torpedo });
+				result.value += this.shipModelValue(hull, engine, beam, ship.beams, torpedo, ship.torps);
+				result.custom = result.custom || !!ship.custom;
+			}
+			result.diff = result.value - target;
+			return result;
+		},
+
+		/**
+		 * Store ships as the predicted build of a player's turn, replacing the predicted warships (or freighters) stored before
+		 * @param ships		[{hull, engine, beam, torpedo}], with beams and torps when not fully armed
+		 * @param freighters	true if the ships are freighters
+		 * @param custom		true for a build put together in the manual build
+		 */
+		setPrediction: function (ownerid, turn, ships, freighters, custom) {
+			var plugin = this;
+			this.predictedShips = this.predictedShips.filter(function (ship) {
+				return !(ship.ownerid == ownerid && ship.predictedTurn == turn && plugin.isFreighter(ship) == freighters);
+			});
+			for (var s = 0; s < ships.length; s++) {
+				var hull = ships[s].hull;
+				var n = new ShipMin();
+				delete n.id;
+				n.name = hull.name;
+				n.ownerid = ownerid;
+				n.hullid = hull.id;
+				n.mass = hull.mass;
+				n.engineid = ships[s].engine ? ships[s].engine.id : 0;
+				n.beamid = ships[s].beam ? ships[s].beam.id : 0;
+				n.beams = ships[s].beam ? (ships[s].beams != null ? ships[s].beams : hull.beams) : 0;
+				n.torpedoid = ships[s].torpedo ? ships[s].torpedo.id : 0;
+				n.torps = ships[s].torpedo ? (ships[s].torps != null ? ships[s].torps : hull.launchers) : 0;
+				n.ammo = ships[s].ammo != null ? ships[s].ammo : -1;
+				n.custom = !!custom;
+				n.damage = -1;
+				n.crew = -1;
+				n.infoturn = turn;
+				n.predicted = true;
+				n.predictedTurn = turn;
+				n.storedListTurn = this.currentListTurn;
+				this.predictedShips.push(n);
+			}
+			this.savePredictedShips();
+		},
+
+		/**
+		 * Store a configuration of the build estimate as the predicted build of its turn
+		 * @param index		position of the configuration in estimateCandidates.ranked
+		 */
+		storePrediction: function (index) {
+			var candidates = this.estimateCandidates;
+			if (!candidates || !candidates.ranked[index])
+				return;
+			this.setPrediction(candidates.ownerid, candidates.turn, candidates.ranked[index].ships, false);
+			this.showEnemyShipsView(8);
+		},
+
+		/**
+		 * Store the manual build as a custom predicted build of the turn shown in the build estimate: its ships as
+		 * predicted warships, or as predicted freighters for a freighter hull
+		 */
+		storeManualPrediction: function () {
+			var state = this.manualBuild;
+			var hull = state ? vgap.getHull(state.hullid) : null;
+			if (!hull || this.manualTurn == null || !(state.count > 0))
+				return;
+			var ship = {
+				hull: hull, engine: vgap.getEngine(state.engineid),
+				beam: state.beams > 0 ? vgap.getBeam(state.beamid) : null, beams: state.beams,
+				torpedo: state.launchers > 0 ? vgap.getTorpedo(state.torpedoid) : null, torps: state.launchers,
+				ammo: state.ammo > 0 ? state.ammo : null
+			};
+			var ships = [];
+			for (var c = 0; c < state.count; c++)
+				ships.push(ship);
+			this.setPrediction(state.ownerid, this.manualTurn, ships, this.isFreighterHull(hull), true);
+			this.showEnemyShipsView(8);
+		},
+
+		/**
+		 * Store the usual starting freighter as a predicted build of turn 2
+		 */
+		storeStarterFreighter: function (ownerid, turn) {
+			var starter = this.getStarterFreighter();
+			if (!starter.hullItem)
+				return;
+			this.setPrediction(ownerid, turn, [{ hull: starter.hullItem, engine: starter.engineItem, beam: null, torpedo: null }], true);
+			this.showEnemyShipsView(8);
+		},
+
+		/**
+		 * Remove the predicted build of a player's turn
+		 * @param freighters	true for the predicted freighters only, false for the warships only, undefined for both
+		 */
+		removePrediction: function (ownerid, turn, freighters) {
+			var plugin = this;
+			this.predictedShips = this.predictedShips.filter(function (ship) {
+				return !(ship.ownerid == ownerid && ship.predictedTurn == turn && (freighters == null || plugin.isFreighter(ship) == freighters));
+			});
+			this.savePredictedShips();
+		},
+
+		/**
+		 * Drop the predicted builds that a newly seen ship now accounts for: a ship of the same player and hull, first seen
+		 * in or after the build turn and after the prediction was stored. Each seen ship accounts for one predicted build.
+		 */
+		reconcilePredictions: function () {
+			if (this.predictedShips.length == 0)
+				return;
+			var used = {};
+			var keep = [];
+			for (var p = 0; p < this.predictedShips.length; p++) {
+				var predicted = this.predictedShips[p];
+				var match = null;
+				for (var s = 0; s < this.enemyShipList.length && !match; s++) {
+					var ship = this.enemyShipList[s];
+					var first = this.getSeenTurns(ship).first;
+					if (!used[ship.id] && ship.ownerid == predicted.ownerid && ship.hullid == predicted.hullid &&
+						first >= predicted.predictedTurn && first > predicted.storedListTurn)
+						match = ship;
+				}
+				if (match)
+					used[match.id] = true;
+				else
+					keep.push(predicted);
+			}
+			if (keep.length != this.predictedShips.length) {
+				this.predictedShips = keep;
+				this.savePredictedShips();
+			}
+		},
+
+		/**
+		 * Save the predicted builds to local storage
+		 */
+		savePredictedShips: function () {
+			if (!this.enabled)
+				return;
+			try {
+				localStorage.setItem(this.storage_path + "predicted", JSON.stringify(this.predictedShips));
+			} catch (err) {
+				console.log("EnemyShipListPlugin: Not enough localStorage space to save the predicted builds.");
+			}
+		},
+
+		/**
+		 * Text of a predicted build: identical ships once with a count
+		 */
+		predictedBuildText: function (ships) {
+			var groups = [];
+			var byKey = {};
+			for (var s = 0; s < ships.length; s++) {
+				var ship = ships[s];
+				var key = this.predictionKey([ship]);
+				if (!byKey[key]) {
+					var parts = [];
+					if (ship.engineid > 0 && vgap.getEngine(ship.engineid))
+						parts.push(vgap.getEngine(ship.engineid).name);
+					if (ship.beamid > 0 && vgap.getBeam(ship.beamid))
+						parts.push(vgap.getBeam(ship.beamid).name);
+					if (ship.torpedoid > 0 && vgap.getTorpedo(ship.torpedoid))
+						parts.push(vgap.getTorpedo(ship.torpedoid).name);
+					byKey[key] = { name: vgap.getHull(ship.hullid).name + (parts.length > 0 ? " (" + parts.join(", ") + ")" : ""), count: 0 };
+					groups.push(byKey[key]);
+				}
+				byKey[key].count++;
+			}
+			return groups.map(function (g) { return g.count + "x " + g.name; }).join(", ") + (ships.some(function (ship) { return ship.custom; }) ? " (custom)" : "");
+		},
+
+		/**
+		 * Html table row of a predicted build in the ship lists, with the columns of a seen ship and marked as predicted
+		 */
+		predictedShipRowHtml: function (ship) {
+			var hull = vgap.getHull(ship.hullid);
+			var player = vgap.getPlayer(ship.ownerid);
+			var race = vgap.getRace(player.raceid);
+			var td = "<td style='color:" + this.colorsA[ship.ownerid] + "; font-style:italic;'>";
+			var beams = hull.beams == 0 ? "---" : (ship.beams > 0 && ship.beamid > 0 ? ship.beams + " " + vgap.getBeam(ship.beamid).name : "?");
+			var secondary = "---";
+			if (hull.fighterbays > 0)
+				secondary = hull.fighterbays + " Fighter " + (hull.fighterbays == 1 ? "Bay" : "Bays");
+			else if (hull.launchers > 0)
+				secondary = ship.torps > 0 && ship.torpedoid > 0 ? ship.torps + " " + vgap.getTorpedo(ship.torpedoid).name + (ship.torps == 1 ? " Tube" : " Tubes") : "?";
+			var html = "<tr title='" + (ship.starting ? "Freighter every player starts with, not seen yet" : "Predicted build of turn " + ship.predictedTurn + ", chosen in the build predictor") + "'>";
+			html += "<td title='Player slot " + ship.ownerid + "' style='color:" + this.colorsA[ship.ownerid] + "; font-style:italic;'>" + player.username + "</td>";
+			html += td + race.shortname + "</td>";
+			html += td + "?</td>";
+			html += "<td title='" + hull.name + "'><img class='TinyIcon' src='" + hullImg(ship.hullid) + "' style='opacity:0.6'/><div style='display: none;'>" + hull.name + "</div></td>";
+			html += td + (ship.starting ? "Starting freighter: " : ship.custom ? "Predicted (custom): " : "Predicted: ") + hull.name + "</td>";
+			if (this.enableEdit && ship.starting)
+				html += "<td></td>";
+			else if (this.enableEdit)
+				html += "<td><button type='button' class='TestButton' onClick='vgap.plugins[\"enemyShipListPlugin\"].removePrediction(" + ship.ownerid + ", " + ship.predictedTurn + "); " +
+					"vgap.plugins[\"enemyShipListPlugin\"].showEnemyShipsView(" + this.view + ");'> Delete </button></td>";
+			html += td + ship.predictedTurn + (ship.starting ? " (start)" : " (predicted)") + "</td>";
+			html += td + "?</td>";
+			html += td + (ship.engineid > 0 && vgap.getEngine(ship.engineid) ? vgap.getEngine(ship.engineid).name : "?") + "</td>";
+			html += td + beams + "</td>";
+			html += td + secondary + "</td>";
+			html += td + "?</td>";
+			html += td + hull.mass + "</td>";
+			html += td + "?</td>";
+			html += td + "?</td>";
+			html += "</tr>";
+			return html;
+		},
+
+		/**
 		 * Names of the usual starting freighter: the one ship every player builds on turn 1 appears on turn 2, and
 		 * as a freighter it is a Large Deep Space Freighter with Transwarp engines (54 of 62 in complete games)
-		 * @return 		{hull, engine}
+		 * @return 		{hull, engine} names, {hullItem, engineItem} the hull and engine (null if missing)
 		 */
 		getStarterFreighter: function () {
 			var hull = null;
@@ -2738,7 +3118,7 @@ function wrapper() { // wrapper for injection
 				if (/transwarp/i.test(vgap.engines[e].name))
 					engine = vgap.engines[e];
 			}
-			return { hull: hull ? hull.name : "Large Deep Space Freighter", engine: engine ? engine.name : "Transwarp Drive" };
+			return { hull: hull ? hull.name : "Large Deep Space Freighter", engine: engine ? engine.name : "Transwarp Drive", hullItem: hull, engineItem: engine };
 		},
 
 		/**
@@ -2755,6 +3135,7 @@ function wrapper() { // wrapper for injection
 			//the manual build calculator is filled in by buildManualCalculator once the page is rendered
 			var manual = "<div><h4>Manual build</h4><div id='BuildPredictManual'></div></div>";
 			plugin.manualTarget = null;
+			plugin.manualTurn = null;
 			if (buildTurns.length == 0) {
 				return html + "<p>No turns with new warships or freighters in the score history.</p>" + manual;
 			}
@@ -2777,7 +3158,8 @@ function wrapper() { // wrapper for injection
 			html += "<p>Turn: <select onChange='vgap.plugins[\"enemyShipListPlugin\"].estimateTurn = parseInt(this.options[this.selectedIndex].value, 10); vgap.plugins[\"enemyShipListPlugin\"].showEnemyShipsView(8);'>";
 			for (var i = 0; i < buildTurns.length; i++) {
 				html += "<option value='" + buildTurns[i].turn + "'" + (buildTurns[i] == row ? " selected='selected'" : "") + ">" +
-					plugin.formatTurnRange(buildTurns[i]) + " (" + shipCounts(buildTurns[i]) + ")</option>";
+					plugin.formatTurnRange(buildTurns[i]) + " (" + shipCounts(buildTurns[i]) + ")" +
+					(plugin.getPredictedBuild(player.id, buildTurns[i].turn).length > 0 ? " - predicted" : "") + "</option>";
 			}
 			html += "</select> " + row.newCapitals + " new warship" + (row.newCapitals == 1 ? "" : "s") + ", " +
 				row.newFreighters + " new freighter" + (row.newFreighters == 1 ? "" : "s") + ", military" + plugin.formatChange(row.militaryChange) + "</p>";
@@ -2785,31 +3167,31 @@ function wrapper() { // wrapper for injection
 			//the one ship every player builds on turn 1 appears on turn 2
 			var unknownFreighters = row.newFreighters;
 			if (row.fromTurn <= 2 && row.turn >= 2) {
-				html += "<p style='color:" + color + "'>Starting build: every player builds one ship on turn 1, which appears on turn 2.";
+				html += "<p style='color:" + color + "'>Starting build: every player starts with a Medium Deep Space Freighter with Transwarp engines, " +
+					"listed as a starting freighter until it is seen, and builds one ship on turn 1, which appears on turn 2.";
 				if (row.newFreighters > 0) {
 					var starter = plugin.getStarterFreighter();
 					html += " Likely starting freighter: 1x " + starter.hull + " with " + starter.engine + " engines (54 of the 62 starting freighters in complete games).";
+					if (plugin.getPredictedBuild(player.id, row.turn, true).length == 0 && starter.hullItem)
+						html += " <button type='button' class='TestButton' title='Store as a predicted build of this turn' " +
+							"onClick='vgap.plugins[\"enemyShipListPlugin\"].storeStarterFreighter(" + player.id + ", " + row.turn + ");'>Use</button>";
 					unknownFreighters--;
 				}
 				html += "</p>";
+			}
+			//the predicted build stored for this turn, listed with the ships seen
+			var storedBuild = plugin.getPredictedBuild(player.id, row.turn);
+			if (storedBuild.length > 0) {
+				html += "<p style='color:" + color + "'>Predicted build stored for this turn, listed with the ships seen until a matching ship is seen: " +
+					plugin.predictedBuildText(storedBuild) +
+					" <button type='button' class='TestButton' onClick='vgap.plugins[\"enemyShipListPlugin\"].removePrediction(" + player.id + ", " + row.turn + "); vgap.plugins[\"enemyShipListPlugin\"].showEnemyShipsView(8);'>Remove</button></p>";
 			}
 			if (unknownFreighters > 0) {
 				html += "<p>" + unknownFreighters + " freighter" + (unknownFreighters == 1 ? "" : "s") + " built. Freighters do not count toward the military score, so their hulls cannot be estimated.</p>";
 			}
 
-			html += "<p style='color:#AAAAAA'>A warship counts 1 point per megacredit and 5 per kt of mineral in its hull, engines, beams and launchers. " +
-				"Loaded torpedoes count 1 point per megacredit and loaded fighters 125 each. Starbase defense (7.5 per post, 62.5 per fighter), planetary defense (5.5 per post), " +
-				"minefields and losses in the same turn also change the military score, so a configuration that leaves part of the change unexplained can still be right. " +
-				"Predicted builds are ranked by how likely the ships are and by how often builds were worth that share of the change in complete games: " +
-				"part of the change usually goes to ammo, defense and minefields, so the likeliest ships often fall short of it. " +
-				"Each race focuses on a few hulls for fighting, sweeping mines and scouting, and the mix shifts through the game: scouts and small warships in the opening, " +
-				"more and bigger warships close to the ship limit. The race's usual builds lead until enough of the fleet has been seen, then the hulls and weapons seen, " +
-				"and hulls first seen right after the turn, count most. Once the ship limit is reached builds are not estimated automatically; the manual build still works. " +
-				"The second list holds every configuration the search kept, closest to the military change first. " +
-				"For each configuration, the starbase builds show one way to make up the rest of the change: starbase fighters first, the most common starbase build, " +
-				"torpedoes loaded once the starbase fighters are full, and defense posts for the small rest.</p>";
-
 			plugin.manualTarget = row.militaryChange;
+			plugin.manualTurn = row.turn;
 
 			//predicted configurations on the left, manual build on the right
 			html += "<div style='display:flex; flex-wrap:wrap; align-items:flex-start; gap:32px;'><div>";
@@ -2831,7 +3213,7 @@ function wrapper() { // wrapper for injection
 
 		/**
 		 * Html for the tables of ship configurations that could explain a turn's military score change:
-		 * the likeliest ones, then a longer scrolling list ordered by how close they come to the change
+		 * the likeliest ones, led by the predicted build stored for the turn
 		 * @param ownerid	player id
 		 * @param row		turn row from getBuildHistory
 		 * @param color		player color
@@ -2859,25 +3241,38 @@ function wrapper() { // wrapper for injection
 				for (var r = 0; r < results.length; r++)
 					results[r].starbase = plugin.estimateStarbaseBuilds(ownerid, results[r].ships, -results[r].diff, row.turn);
 			};
-			addStarbase(estimate.ranked);
-			addStarbase(estimate.closest);
+			//the predicted build stored for the turn leads the list, marked as predicted; a stored build the estimate did not
+			//list (a manual build) is added
+			var results = estimate.ranked;
+			var storedShips = plugin.getPredictedBuild(ownerid, row.turn, false);
+			var stored = plugin.predictionKey(storedShips);
+			if (storedShips.length > 0) {
+				var match = results.filter(function (r) { return plugin.resultKey(r) == stored; });
+				var others = results.filter(function (r) { return plugin.resultKey(r) != stored; });
+				results = (match.length > 0 ? match : [plugin.predictedResult(storedShips, row.militaryChange)]).concat(others);
+			}
+			addStarbase(results);
+			//kept for the Use buttons, which store a configuration as the predicted build of the turn
+			plugin.estimateCandidates = { ownerid: ownerid, turn: row.turn, ranked: results };
 			html += "<h4>Predicted builds</h4>";
-			html += plugin.buildConfigTableHtml(estimate.ranked, color);
-			html += "<h4>Closest to the military change (" + estimate.closest.length + ")</h4>";
-			html += "<div id='BuildPredictClosest' style='display:inline-block; overflow-y:auto;'>" + plugin.buildConfigTableHtml(estimate.closest, color) + "</div>";
+			html += plugin.buildConfigTableHtml(results, color, stored, ownerid, row.turn);
 			return html;
 		},
 
 		/**
 		 * Html table of ship configurations, identical ships listed once with a count, with the starbase builds
 		 * that make up the rest of the military change
-		 * @param results	[{ships, value, diff, starbase}] from estimateBuilds, starbase from estimateStarbaseBuilds
+		 * @param results	[{ships, value, diff, starbase}] from estimateBuilds, starbase from estimateStarbaseBuilds;
+		 * 					the Use buttons store results[i] of estimateCandidates.ranked
 		 * @param color		player color
+		 * @param stored	predictionKey of the stored predicted build of the turn, marked as predicted
+		 * @param ownerid	player id and turn of the build, for the button that removes the stored build
+		 * @param turn
 		 */
-		buildConfigTableHtml: function (results, color) {
+		buildConfigTableHtml: function (results, color, stored, ownerid, turn) {
 			var plugin = this;
 			var html = "<table class='BuildPredictTable' border='0'><thead><tr>" +
-				"<th>Ships</th><th>Role</th><th>Engine</th><th>Beams</th><th>Torpedoes</th><th>Ships Military</th><th>Starbase Builds</th><th>Difference</th>" +
+				"<th></th><th>Ships</th><th>Role</th><th>Engine</th><th>Beams</th><th>Torpedoes</th><th>Ships Military</th><th>Starbase Builds</th><th>Difference</th>" +
 				"</tr></thead><tbody>";
 			for (var r = 0; r < results.length; r++) {
 				//identical ships are listed once with a count, one line per kind of ship
@@ -2893,7 +3288,14 @@ function wrapper() { // wrapper for injection
 					byKey[key].count++;
 				}
 				var column = function (text) { return "<td>" + groups.map(text).join("<br>") + "</td>"; };
-				html += "<tr style='color:" + color + "'>" +
+				var predicted = plugin.resultKey(results[r]) == stored;
+				var use = predicted ?
+					"<td style='font-weight:bold; white-space:nowrap;' title='The predicted build of this turn, listed with the ships seen'>Predicted" +
+					(results[r].custom ? " (custom)" : "") + " <button type='button' class='TestButton' " +
+					"onClick='vgap.plugins[\"enemyShipListPlugin\"].removePrediction(" + ownerid + ", " + turn + ", false); vgap.plugins[\"enemyShipListPlugin\"].showEnemyShipsView(8);'>Remove</button></td>" :
+					"<td><button type='button' class='TestButton' title='Store as the predicted build of this turn' " +
+					"onClick='vgap.plugins[\"enemyShipListPlugin\"].storePrediction(" + r + ");'>Use</button></td>";
+				html += "<tr style='color:" + color + (predicted ? "; background:rgba(255,255,255,0.12); font-style:italic;" : "") + "'>" + use +
 					column(function (g) { return g.count + "x " + g.ship.hull.name; }) +
 					column(function (g) { return plugin.getShipRole(g.ship.hull); }) +
 					column(function (g) { return g.ship.engine.name; }) +
@@ -2982,7 +3384,10 @@ function wrapper() { // wrapper for injection
 			var baseDefense = makeNumber(state.baseDefense || 0, 200);
 			var planetDefense = makeNumber(state.planetDefense || 0);
 
-			var table = $("<table class='BuildPredictTable' border='0'></table>").appendTo(container);
+			//choices on the left, the military score they add on the right
+			var layout = $("<div style='display:flex; flex-wrap:wrap; align-items:flex-start; gap:24px;'></div>").appendTo(container);
+			var table = $("<table class='BuildPredictTable' border='0'></table>").appendTo(layout);
+			var costs = $("<div></div>").appendTo(layout);
 			var addRow = function (label, controls) {
 				var tr = $("<tr></tr>").appendTo(table);
 				$("<td></td>").text(label).appendTo(tr);
@@ -3006,7 +3411,14 @@ function wrapper() { // wrapper for injection
 			addRow("Starbase defense posts", [baseDefense]);
 			addRow("Planetary defense posts", [planetDefense]);
 
-			var result = $("<table class='BuildPredictTable' border='0' style='margin-top:8px;'></table>").appendTo(container);
+			var result = $("<table class='BuildPredictTable' border='0'></table>").appendTo(costs);
+			//the manual build can be stored as a custom predicted build of the turn shown in the build estimate
+			if (plugin.manualTurn != null) {
+				$("<button type='button' class='TestButton' style='margin-top:8px;' title='Store these ships as the predicted build of the turn, listed with the ships seen'></button>")
+					.text("Use as predicted build of turn " + plugin.manualTurn)
+					.on("click", function () { plugin.storeManualPrediction(); })
+					.appendTo(costs);
+			}
 
 			var update = function () {
 				var clamp = function (input, max) {
@@ -3135,20 +3547,26 @@ function wrapper() { // wrapper for injection
 				}
 			}
 			if (entries[2])
-				entries[1] = { c: 0, f: 0, m: this.startMilitary, start: true };
+				entries[1] = { c: 0, f: 1, m: this.startMilitary, start: true };
 			var recorded = Object.keys(entries).map(function (t) { return parseInt(t, 10); });
 			recorded.sort(function (a, b) { return a - b; });
 
 			var ships = [];
-			for (var s = 0; s < this.enemyShipList.length; s++) {
-				var ship = this.enemyShipList[s];
+			var known = this.getKnownShips();
+			for (var s = 0; s < known.length; s++) {
+				var ship = known[s];
 				//support for sphere addon: ignore ships with negative id
 				if (ship.ownerid != ownerid || ship.id < 0)
 					continue;
 				var seen = this.getSeenTurns(ship);
-				ships.push({ ship: ship, type: this.isFreighter(ship) ? "freighter" : "capital", firstSeen: seen.first, lastSeen: seen.last });
+				ships.push({ ship: ship, type: this.isFreighter(ship) ? "freighter" : "capital", firstSeen: seen.first, lastSeen: seen.last, predicted: !!ship.predicted });
 			}
-			ships.sort(function (a, b) { return parseInt(a.ship.id, 10) - parseInt(b.ship.id, 10); });
+			//seen ships by id, then predicted builds by turn
+			ships.sort(function (a, b) {
+				if (a.predicted != b.predicted)
+					return a.predicted ? 1 : -1;
+				return a.predicted ? a.firstSeen - b.firstSeen : parseInt(a.ship.id, 10) - parseInt(b.ship.id, 10);
+			});
 
 			//a rise in warships or freighters means at least that many were built (losses in the same turn hide builds)
 			var turns = [];
@@ -3166,7 +3584,7 @@ function wrapper() { // wrapper for injection
 					row.newFreighters = Math.max(0, row.freighterChange);
 				}
 				for (var i = 0; i < ships.length; i++) {
-					if (ships[i].firstSeen == row.turn)
+					if (ships[i].firstSeen == row.turn && !ships[i].predicted)
 						row.firstSeen.push(ships[i].ship.id);
 				}
 				//the start of the game only serves as the base of turn 2
@@ -3227,20 +3645,23 @@ function wrapper() { // wrapper for injection
 				return;
 			}
 
-			//player selection, shared with the single player view
-			html += "<p><strong>Select Player:</strong> <select id='buildPredictorPlayer' " +
+			var player = vgap.getPlayer(plugin.playerFilterId);
+			var race = vgap.getRace(player.raceid);
+			var color = plugin.colorsA[player.id];
+
+			//player selection, shared with the single player view; large and in the player's colour, as the heading of the page
+			html += "<p><select id='buildPredictorPlayer' style='font-size:20px; font-weight:bold; color:" + color + "; background:#000; padding:2px 4px;' " +
 				"onChange='vgap.plugins[\"enemyShipListPlugin\"].playerFilterId = this.options[this.selectedIndex].value; " +
 				"vgap.plugins[\"enemyShipListPlugin\"].estimateTurn = null; " +
 				"vgap.plugins[\"enemyShipListPlugin\"].showEnemyShipsView(8);'>";
 			for (var p = 0; p < vgap.players.length; p++) {
-				html += "<option " + (vgap.players[p].id == plugin.playerFilterId ? "selected='selected' " : "") +
-					"value='" + vgap.players[p].id + "'>" + vgap.players[p].id + " - " + vgap.players[p].fullname + "</option>";
+				var option = vgap.players[p];
+				var optionRace = vgap.getRace(option.raceid);
+				html += "<option style='color:" + plugin.colorsA[option.id] + "' " + (option.id == plugin.playerFilterId ? "selected='selected' " : "") +
+					"value='" + option.id + "'>" + option.id + ": " + plugin.escapeHtml(option.username) + " - " + (optionRace ? optionRace.name : "?") +
+					(plugin.isPlayerDead(option.id) ? " (dead)" : "") + "</option>";
 			}
 			html += "</select></p>";
-
-			var player = vgap.getPlayer(plugin.playerFilterId);
-			var race = vgap.getRace(player.raceid);
-			var color = plugin.colorsA[player.id];
 			var history = plugin.getBuildHistory(player.id);
 			var latest = history.turns.length > 0 ? history.turns[0] : null;
 
@@ -3252,8 +3673,6 @@ function wrapper() { // wrapper for injection
 				else
 					freightersKnown++;
 			}
-
-			html += "<h2 style='color:" + color + "'>" + player.id + ": " + plugin.escapeHtml(player.username) + " - " + race.name + (plugin.isPlayerDead(player.id) ? " (dead)" : "") + "</h2>";
 
 			//summary of the latest recorded turn
 			if (latest) {
@@ -3305,6 +3724,17 @@ function wrapper() { // wrapper for injection
 					"</tr></thead><tbody>";
 				for (var i = 0; i < history.ships.length; i++) {
 					var entry = history.ships[i];
+					if (entry.predicted) {
+						html += "<tr style='color:" + color + "; font-style:italic;' title='Predicted build, chosen in the build estimate'>" +
+							"<td>?</td>" +
+							"<td>" + vgap.getHull(entry.ship.hullid).name + "</td>" +
+							"<td>" + (entry.ship.starting ? "Starting freighter" : entry.ship.custom ? "Custom predicted build" : "Predicted build") + "</td>" +
+							"<td>" + (entry.type == "capital" ? "Warship" : "Freighter") + "</td>" +
+							"<td>" + entry.firstSeen + (entry.ship.starting ? " (start)" : " (predicted)") + "</td>" +
+							"<td>-</td>" +
+							"</tr>";
+						continue;
+					}
 					html += "<tr style='color:" + color + "'>" +
 						"<td>" + entry.ship.id + "</td>" +
 						"<td>" + vgap.getHull(entry.ship.hullid).name + "</td>" +
@@ -3339,16 +3769,6 @@ function wrapper() { // wrapper for injection
 			}
 			//keep the mouse wheel on the score table from scrolling the whole page
 			scores.on("mousewheel DOMMouseScroll wheel", function (e) { e.stopPropagation(); });
-
-			//same for the list of configurations closest to the military change, measured by its first rows
-			var closest = $("#BuildPredictClosest");
-			var closestRows = closest.find("tbody tr");
-			if (closestRows.length > plugin.estimateClosestVisible) {
-				var visibleHeight = closest.find("thead").outerHeight();
-				closestRows.slice(0, plugin.estimateClosestVisible).each(function () { visibleHeight += $(this).outerHeight(); });
-				closest.css("max-height", visibleHeight);
-			}
-			closest.on("mousewheel DOMMouseScroll wheel", function (e) { e.stopPropagation(); });
 
 			plugin.pane.jScrollPane();
 
