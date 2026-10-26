@@ -955,9 +955,7 @@ function wrapper() { // wrapper for injection
 				var ownerid = this.enemyShipList[es].ownerid;
 
 				//                    console.log(es + ": owner: " + ownerid);
-				var relation = vgap.getRelation(ownerid);
-
-				if (ownerid == vgap.player.id || vgap.fullallied(ownerid) || (relation != null && relation.relationfrom >= 3)) {
+				if (this.isSharedPlayer(ownerid)) {
 					//                        console.log("delete");
 					// remove ship
 					this.enemyShipList.splice(es, 1);
@@ -1043,6 +1041,16 @@ function wrapper() { // wrapper for injection
 			this.saveEnemyShipList();
 			this.reconcilePredictions();
 
+		},
+
+		/**
+		 * Check if a player's ships are all seen every turn: the player themselves, a full ally or a player sharing intel
+		 * @param ownerid	player id
+		 * @return 			true if the player's builds need no prediction
+		 */
+		isSharedPlayer: function (ownerid) {
+			var relation = vgap.getRelation(ownerid);
+			return ownerid == vgap.player.id || vgap.fullallied(ownerid) || (relation != null && relation.relationfrom >= 3);
 		},
 
 		/**
@@ -2986,7 +2994,8 @@ function wrapper() { // wrapper for injection
 			var ships = [];
 			for (var p = 0; p < vgap.players.length; p++) {
 				var ownerid = vgap.players[p].id;
-				if (seen[ownerid])
+				//the ships of yourself, full allies and players sharing intel are all seen
+				if (seen[ownerid] || this.isSharedPlayer(ownerid))
 					continue;
 				var n = new ShipMin();
 				delete n.id;
@@ -3967,7 +3976,12 @@ function wrapper() { // wrapper for injection
 					"<td title='Known / scoreboard (new this turn)'>Freighters: " + freightersKnown + " / " + getNumForPlayer(player.id, "freighters") + plugin.formatChange(latest.newFreighters) + "</td>" +
 					"</tr></table>";
 
-				html += plugin.buildEstimatorHtml(player, history);
+				//the ships of yourself, full allies and players sharing intel are all seen, so their builds are not predicted
+				if (plugin.isSharedPlayer(player.id))
+					html += "<h3>Build estimate</h3><p>" + (player.id == vgap.player.id ? "These are your own builds" :
+						"This player is a full ally or shares intel with you") + ", so all their ships are seen and their builds are not predicted.</p>";
+				else
+					html += plugin.buildEstimatorHtml(player, history);
 			}
 
 			//score changes on the left, ship summary on the right
