@@ -1,8 +1,9 @@
 // Accuracy of estimateStarbaseBuilds (the starbase builds that make up the rest of the military change) against complete games: turns where the scoreboard matches the summed values,
-// given the true new ships, the player's earlier builds as the known fleet and the real starbase count.
+// given the true new ships, the player's earlier builds as the known fleet and the real starbase count. Saves reports/starbase.tsv.
 const fs = require('fs');
 const path = require('path');
 const core = require('./evalcore.js')(false);
+const writeTsv = require('./tsv.js');
 const plugin = core.plugin;
 const seen = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'seen.json')));
 const d = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'data.json')));
@@ -32,4 +33,7 @@ for (const r of d.records) {
   if (parts.f > 0) { fTurns++; if (Math.abs(got.f - parts.f) < 1) fRight++; }
 }
 console.log('turns', n, 'made up within 1 point', exact, 'kinds right', kindsRight, 'starbase fighter turns', fTurns, 'fighter count right', fRight);
-console.log(Object.entries(conf).sort((a, b) => b[1] - a[1]).slice(0, 14).map(e => e[1] + '  ' + e[0]).join('\n'));
+const kinds = Object.entries(conf).sort((a, b) => b[1] - a[1]);
+console.log(kinds.slice(0, 14).map(e => e[1] + '  ' + e[0]).join('\n'));
+// kinds: f starbase fighters, b starbase defense, p planetary defense, a ammo
+writeTsv('starbase', ['turns', 'kinds built -> kinds picked'], [[n, 'all: made up within 1 point ' + exact + ', kinds right ' + kindsRight + ', starbase fighter turns ' + fTurns + ', fighter count right ' + fRight], ...kinds.map(e => [e[1], e[0]])]);

@@ -1,6 +1,6 @@
-"""Share of fighters, sweepers, scouts and utility ships each race built per phase. Usage: python roles.py"""
+"""Share of fighters, sweepers, scouts and utility ships each race built per phase. Saves reports/roles.tsv. Usage: python roles.py"""
 import json, collections, re
-from common import true_builds, load, data_path
+from common import true_builds, load, data_path, write_tsv
 d = load('data.json'); S = load('seen.json')
 tot = {(r['game'], r['turn']): r['totalships'] for r in d['records']}
 H = {}
@@ -22,3 +22,6 @@ for r in d['records']:
         C[(r['raceid'], ph(r))][role(H[b['hullid']])] += 1; C[(0, ph(r))][role(H[b['hullid']])] += 1
 for race in [0] + sorted(RN):
     print('%-9s' % RN.get(race, 'ALL'), '  '.join('%s: %s' % (p, ' '.join('%s %2d%%' % (k[:5], 100 * C[(race, p)][k] / max(1, sum(C[(race, p)].values()))) for k in ('fight', 'sweep', 'scout', 'utility'))) for p in ('opening', 'early', 'near', 'after')))
+write_tsv('roles', ['race', 'phase', 'builds', 'fighter %', 'sweeper %', 'scout %', 'utility %'],
+          [[RN.get(race, 'ALL'), p, sum(C[(race, p)].values())] + [round(100 * C[(race, p)][k] / max(1, sum(C[(race, p)].values())), 1) for k in ('fight', 'sweep', 'scout', 'utility')]
+           for race in [0] + sorted(RN) for p in ('opening', 'early', 'near', 'after')])

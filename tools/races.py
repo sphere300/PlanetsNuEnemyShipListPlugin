@@ -1,6 +1,6 @@
-"""Top hulls each race built per phase, with the most common outfit. Usage: python races.py"""
+"""Top hulls each race built per phase, with the most common outfit. Saves reports/races.tsv. Usage: python races.py"""
 import json, collections
-from common import true_builds, load, data_path
+from common import true_builds, load, data_path, write_tsv
 d = load('data.json'); S = load('seen.json')
 tot = {(r['game'], r['turn']): r['totalships'] for r in d['records']}
 def ph(r):
@@ -16,8 +16,11 @@ for r in d['records']:
     for b in true_builds(r) or []:
         k = (r['raceid'], ph(r)); C[k][b['hullid']] += 1
         cfg[(k, b['hullid'])][(E[b['engineid']]['name'][:10] if b['engineid'] in E else '?', B[b['beamid']]['name'][:10] if b['beams'] else '-', TP[b['torpedoid']]['name'][:10] if b['torps'] else '-')] += 1
+rows = []
 for race in sorted(RN):
     for p in ('early', 'near', 'after'):
         c = C[(race, p)]; n = sum(c.values())
         if not n: continue
+        rows += [[RN[race], p, n, H[h]['name'], round(100 * k / n, 1), '/'.join(cfg[((race, p), h)].most_common(1)[0][0])] for h, k in c.most_common(5)]
         print('%-9s %-5s n=%4d ' % (RN[race], p, n) + '; '.join('%s %d%% [%s]' % (H[h]['name'][:22], 100 * k / n, '/'.join(cfg[((race, p), h)].most_common(1)[0][0])) for h, k in c.most_common(5)))
+write_tsv('races', ['race', 'phase', 'builds', 'hull', 'share %', 'usual outfit (engine/beam/torpedo)'], rows)

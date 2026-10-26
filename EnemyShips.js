@@ -17,7 +17,7 @@
 
 /*
 Change log:
-1.41   Added a 'Build Predictor' tab. Records the scoreboard every turn and shows per player the changes in score, military score, warships and freighters, with the ships first seen each turn and a summary of the player's known and missing ships. A build estimate lists ship configurations that could explain a turn's military score change, tuned on complete games: it follows each race's usual fighters, sweepers and scouts in each phase of the game (opening, early, close to the ship limit), shows the starbase builds (starbase fighters, defense posts, loaded ammo) that make up the rest of the change, shows the starting build on turn 2 and lists every player's starting freighter until it is seen, lets a configuration be stored as the predicted build, listed and counted with the ships seen but marked as predicted until a matching ship is seen, and stops at the ship limit (the manual build, which also takes starbase builds, still works). A manual build can be stored as a custom predicted build.
+1.41   Added a 'Build Predictor' tab. Records the scoreboard every turn and shows per player the changes in score, military score, warships and freighters, with the ships first seen each turn and a summary of the player's known and missing ships. A build estimate lists ship configurations that could explain a turn's military score change, tuned on complete games: it follows each race's usual fighters, sweepers and scouts in each phase of the game (opening, early, close to the ship limit), shows the starbase builds (starbase fighters, defense posts, loaded ammo) that make up the rest of the change, shows the starting build on turn 2 and lists every player's starting freighter until it is seen, lists the 5 likeliest configurations, none worth more than 1.25 times the military change, above a table of how often the estimate was right on complete games with the model version it was measured on, lets a configuration be stored as the predicted build, listed and counted with the ships seen but marked as predicted until a matching ship is seen, and stops at the ship limit (the manual build, which also takes starbase builds, still works). A manual build can be stored as a custom predicted build.
 1.40  Added a new feature to see the historical movement of enemy ships. You can filter by all, by player, or by ship. You can show the path range for specific time windows and fixed one issue with the origonal plugins icon
 1.39   Updated include for new URL [2018-12-22]
 1.38   Updated to recent changes in mobile client [2018-12-22]
@@ -348,6 +348,7 @@ function wrapper() { // wrapper for injection
 		//with the build turn (predictedTurn) and the last list turn when they were chosen (storedListTurn)
 		predictedShips: [],
 		scoreHistory: {},	//turn -> ownerid -> {c: capital ships, f: freighters, m: military score, s: score, and their changes from the turn before: dc, df, dm, ds}
+		mineHistory: {},	//turn -> minefield id -> [ownerid, units] of the minefields seen in the turn
 		currentListTurn: 0,
 		firstListTurn: 0,
 		version: plugin_version,
@@ -381,10 +382,11 @@ function wrapper() { // wrapper for injection
 		turnTo: 0,		//0 = current turn
 		scoreVisibleTurns: 15,	//rows visible in the build predictor score table before it scrolls
 		estimateTurn: null,		//turn shown in the build estimate, null = latest turn with new warships
-		estimateResults: 8,		//configurations listed in the build estimate
+		estimateResults: 5,		//configurations listed in the build estimate
 		estimateClosestResults: 100,	//configurations returned by closeness to the military change (used by the tuning scripts)
 		//build estimate tuning, fitted on complete games
 		estimateSearchWidth: 200,		//partial ship sets kept per step of the search
+		estimateMaxOver: 1.25,			//most a listed set may be worth, as a multiple of the military change
 		estimateRaceHullWeight: 0.5,	//weight of a race hull never seen in the player's fleet; each seen ship adds 1
 		estimateFreshWeight: 8,			//weight added per ship first seen in the build turn or the next
 		estimateFreshTurns: 2,			//turns after the build in which a first sighting counts as fresh
@@ -393,6 +395,10 @@ function wrapper() { // wrapper for injection
 		//next to one Medium Deep Space Freighter with Transwarp engines. The turn 1 scoreboard shows 0 instead, so the turn 2
 		//change would count them as built.
 		startMilitary: 2110,
+		//minefields count 0.27 military points per mine unit (complete games: every race), and lose 5% of their units a turn.
+		//Laying mines uses up torpedoes, which counted as ammo: each makes torpedo id squared units, four times that for the Robots.
+		mineValue: 0.27,
+		mineDecay: 0.05,
 		estimateEarlyFill: 0.5,			//fraction of the ship limit in use below which a build counts as early game
 		//how players build in each phase of the game, by how full the ship limit is. In the opening players build scouts and
 		//small cheap warships, then more and bigger warships, and close to the limit they trade minerals for strength.
@@ -407,17 +413,37 @@ function wrapper() { // wrapper for injection
 		//	fit: how often the ships built are worth each fraction of the military change (estimateFitEdges), the rest
 		//		goes to ammo, defense and minefields
 		estimatePhases: {
-			opening: { name: "opening", hullSlope: 1, beamSlope: -3, torpedoSlope: -3, bestEngine: 8, cheapEngine: 1, seenWeight: 0.5, focusWeight: 40, focusOutfit: 0.75, outfitWeight: 0.5, fitWeight: 0.5,
+			opening: { name: "opening", hullSlope: 1, beamSlope: -3, torpedoSlope: -3, bestEngine: 8, cheapEngine: 1, seenWeight: 8, focusWeight: 10, focusOutfit: 0.5, outfitWeight: 0.5, fitWeight: 0.5,
 				fit: [0.01, 0.02, 0.02, 0.01, 0.03, 0.04, 0.03, 0.06, 0.07, 0.07, 0.13, 0.5, 0.001, 0.001, 0.01, 0.001] },
-			early: { name: "early game", hullSlope: 0, beamSlope: -3, torpedoSlope: -3, bestEngine: 8, cheapEngine: 3, seenWeight: 3, focusWeight: 20, focusOutfit: 0.75, outfitWeight: 0.5, fitWeight: 1,
+			early: { name: "early game", hullSlope: 0, beamSlope: -3, torpedoSlope: -3, bestEngine: 4, cheapEngine: 3, seenWeight: 3, focusWeight: 20, focusOutfit: 0.5, outfitWeight: 0.5, fitWeight: 0.75,
 				fit: [0.01, 0.02, 0.04, 0.03, 0.05, 0.05, 0.08, 0.07, 0.15, 0.1, 0.18, 0.18, 0.01, 0.01, 0.02, 0.01] },
-			nearCap: { name: "close to the ship limit", hullSlope: 1, beamSlope: -3, torpedoSlope: -2, bestEngine: 8, cheapEngine: 3, seenWeight: 3, focusWeight: 10, focusOutfit: 0.9, outfitWeight: 1, fitWeight: 1,
+			nearCap: { name: "close to the ship limit", hullSlope: 1, beamSlope: -3, torpedoSlope: -2, bestEngine: 8, cheapEngine: 0, seenWeight: 3, focusWeight: 5, focusOutfit: 0.75, outfitWeight: 0.5, fitWeight: 0.5,
 				fit: [0.01, 0.02, 0.04, 0.04, 0.04, 0.06, 0.08, 0.12, 0.13, 0.11, 0.15, 0.06, 0.04, 0.03, 0.03, 0.02] },
 			afterCap: { name: "ship limit reached", hullSlope: 1, beamSlope: 1, torpedoSlope: 2, bestEngine: 8, cheapEngine: 3, seenWeight: 3, focusWeight: 0, focusOutfit: 0, outfitWeight: 1, fitWeight: 1,
 				fit: [0.05, 0.07, 0.08, 0.11, 0.1, 0.1, 0.09, 0.07, 0.07, 0.03, 0.04, 0.04, 0.01, 0.01, 0.04, 0.03] }
 		},
 		estimateFitEdges: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.02, 1.05, 1.1, 1.25, 1.5],
 		estimateFitFloor: 0.002,		//likelihood density of a fraction outside estimateFitEdges
+		//confidence in the listed builds, fitted on complete games (tools/confidence.js): how often the hulls built are among
+		//the listed builds, by phase, by whether a warship of the player was seen by the build turn or the turn after, and by
+		//warships built (1, 2, 3 or more); and how fast the share of a listed build falls with its score behind the best one
+		estimateListed: {
+			opening: { seen: [0.96, 0.68, 0.35], unseen: [0.95, 0.55, 0.4] },
+			early: { seen: [0.91, 0.63, 0.21], unseen: [0.89, 0.7, 0.24] },
+			nearCap: { seen: [0.86, 0.55, 0.21], unseen: [0.88, 0.5, 0.21] },
+			afterCap: { seen: [0.86, 0.55, 0.21], unseen: [0.88, 0.5, 0.21] }
+		},
+		estimateConfidenceSpread: 0.7,
+		//the parts of the plugin the build estimate depends on: any change to them gives a new model version (getModelVersion)
+		estimateModelParts: ["estimateResults", "estimateSearchWidth", "estimateMaxOver", "estimateRaceHullWeight", "estimateFreshWeight", "estimateFreshTurns",
+			"estimateOpeningFill", "estimateEarlyFill", "startMilitary", "mineValue", "mineDecay", "estimatePhases", "estimateFitEdges", "estimateFitFloor",
+			"estimateListed", "estimateConfidenceSpread", "estimateRaceFocus", "partValue", "shipModelValue", "isFreighterHull", "getBuildPhase",
+			"getRaceFocus", "getBuildPriors", "estimateBuilds", "getListedShare", "setConfidence", "getMineChange", "getFleetTorpedo",
+			"getKnownShips", "getSeenTurns"],
+		//how often the build estimate was right on complete games, from tools/report.js: model version and its hash
+		//(getModelVersion, printed by report.js), and per phase the build turns tested and the percentage with the hulls and loadout among the listed
+		//builds (loadout), the hulls in the top build (top1) and the hulls among the listed builds (listed)
+		estimateAccuracy: {"version":3,"model":"ce5424d7","date":"2026-10-26","games":25,"phases":{"all":{"turns":4573,"loadout":18.1,"top1":50.4,"listed":74},"opening":{"turns":1207,"loadout":36.3,"top1":74.9,"listed":91.8},"early":{"turns":1321,"loadout":18.1,"top1":51,"listed":79.6},"nearCap":{"turns":2045,"loadout":7.4,"top1":35.6,"listed":60}}},
 		//usual builds per race (by race id) and phase, from complete games: [hull id, share of builds,
 		//[[engine id, beam id, torpedo id, share of the hull's builds], ...]], beam or torpedo id 0 when built without
 		estimateRaceFocus: {
@@ -508,6 +534,7 @@ function wrapper() { // wrapper for injection
 			this.enemyShipList = [];
 			this.predictedShips = [];
 			this.scoreHistory = {};
+			this.mineHistory = {};
 			this.firstListTurn = vgap.game.turn;
 			this.currentListTurn = vgap.game.turn - 1;
 			this.player_name = vgap.player.username;
@@ -575,6 +602,8 @@ function wrapper() { // wrapper for injection
 
 				var stored_scores = localStorage.getItem(this.storage_path + "scorehistory");
 				this.scoreHistory = (stored_scores != null) ? JSON.parse(stored_scores) : {};
+				var stored_mines = localStorage.getItem(this.storage_path + "minehistory");
+				this.mineHistory = (stored_mines != null) ? JSON.parse(stored_mines) : {};
 				var stored_predicted = localStorage.getItem(this.storage_path + "predicted");
 				this.predictedShips = (stored_predicted != null) ? JSON.parse(stored_predicted) : [];
 
@@ -706,6 +735,7 @@ function wrapper() { // wrapper for injection
 			localStorage.removeItem(key_prefix + "race");
 			localStorage.removeItem(key_prefix + "game_name");
 			localStorage.removeItem(key_prefix + "scorehistory");
+			localStorage.removeItem(key_prefix + "minehistory");
 			localStorage.removeItem(key_prefix + "predicted");
 
 			if (game_id == vgap.gameId && player_slot == vgap.player.id) {
@@ -782,6 +812,7 @@ function wrapper() { // wrapper for injection
 
 			//the scoreboard of any loaded turn is valid on its own, so record it even if the list is not updated
 			this.recordScores();
+			this.recordMinefields();
 
 			if (vgap.game.turn <= this.currentListTurn) {
 				console.log("EnemyShipListPlugin: Turn before latest integrated data: ignored.");
@@ -1354,7 +1385,11 @@ function wrapper() { // wrapper for injection
 						if (item != null) {
 							data_size += item.length * 2; //each symbol is 2 bytes on disk
 						}
-						item = localStorage.getItem("EnemyShipListPlugin." + game_id + "." + player_slot + ".predicted");
+						item = localStorage.getItem("EnemyShipListPlugin." + game_id + "." + player_slot + ".minehistory");
+					if (item != null) {
+						data_size += item.length * 2; //each symbol is 2 bytes on disk
+					}
+					item = localStorage.getItem("EnemyShipListPlugin." + game_id + "." + player_slot + ".predicted");
 						if (item != null) {
 							data_size += item.length * 2; //each symbol is 2 bytes on disk
 						}
@@ -2268,6 +2303,31 @@ function wrapper() { // wrapper for injection
 		},
 
 		/**
+		 * Store the units of the minefields seen in the loaded turn so the build predictor can tell the mines laid or lost
+		 * in a turn from the ships built
+		 */
+		recordMinefields: function () {
+			if (!vgap.minefields)
+				return;
+			var snapshot = {};
+			for (var i = 0; i < vgap.minefields.length; i++) {
+				var field = vgap.minefields[i];
+				//fields not seen this turn show the units of their last sighting
+				if (field.ownerid > 0 && field.infoturn == vgap.game.turn)
+					snapshot[field.id] = [field.ownerid, field.units];
+			}
+			this.mineHistory[vgap.game.turn] = snapshot;
+			this.mineIdCache = null;
+			if (!this.enabled)
+				return;
+			try {
+				localStorage.setItem(this.storage_path + "minehistory", JSON.stringify(this.mineHistory));
+			} catch (err) {
+				console.log("EnemyShipListPlugin: Not enough localStorage space to save the minefield history.");
+			}
+		},
+
+		/**
 		 * Fill the score history with the scoreboard of all past turns from the NU server
 		 */
 		loadScoreHistoryFromServer: function () {
@@ -2417,7 +2477,7 @@ function wrapper() { // wrapper for injection
 		 * @param ownerid	player id
 		 * @param turn		build turn; ships first seen before it describe the fleet, ships first seen in it or the next turn are likely the builds
 		 * @return 			{hulls, engines, beams, torpedos}: arrays of {item, p}, most likely first; focus: result of getRaceFocus;
-		 * 					phase: result of getBuildPhase
+		 * 					phase: result of getBuildPhase; seen: {fleet, fresh} warships of the player seen before the turn and fresh
 		 */
 		getBuildPriors: function (ownerid, turn) {
 			var buildPhase = this.getBuildPhase(turn);
@@ -2438,6 +2498,7 @@ function wrapper() { // wrapper for injection
 			}
 
 			var engines = {}, beams = {}, torpedos = {};
+			var seen = { fleet: 0, fresh: 0 };
 			var known = this.getKnownShips(turn);
 			for (var s = 0; s < known.length; s++) {
 				var ship = known[s];
@@ -2448,11 +2509,13 @@ function wrapper() { // wrapper for injection
 					continue;
 				var firstSeen = this.getSeenTurns(ship).first;
 				if (firstSeen < turn) {
+					seen.fleet++;
 					hullWeight[shipHull.id] = (hullWeight[shipHull.id] || 0) + 1;
 					if (ship.engineid > 0 && vgap.getEngine(ship.engineid)) count(engines, ship.engineid);
 					if (ship.beamid > 0 && vgap.getBeam(ship.beamid)) count(beams, ship.beamid);
 					if (ship.torpedoid > 0 && vgap.getTorpedo(ship.torpedoid)) count(torpedos, ship.torpedoid);
 				} else if (firstSeen < turn + this.estimateFreshTurns) {
+					seen.fresh++;
 					hullWeight[shipHull.id] = (hullWeight[shipHull.id] || 0) + this.estimateFreshWeight;
 				}
 			}
@@ -2516,22 +2579,24 @@ function wrapper() { // wrapper for injection
 				beams: sorted(componentWeights(vgap.beams, beams, beamExtra, phase.beamSlope), function (id) { return vgap.getBeam(id); }),
 				torpedos: sorted(componentWeights(vgap.torpedos, torpedos, torpedoExtra, phase.torpedoSlope), function (id) { return vgap.getTorpedo(id); }),
 				focus: focus,
-				phase: buildPhase
+				phase: buildPhase,
+				seen: seen
 			};
 		},
 
 		/**
 		 * Find the sets of warships that best explain a turn's military score change. Each ship gets a hull with full
 		 * beams and launchers; ships can differ in engine and weapons. A set is scored on how likely its hulls and
-		 * outfits are and on how often builds in complete games were worth that fraction of the change: a set worth
-		 * more than the change is unlikely, one worth less is common, as ammo, defense and minefields built in the
-		 * same turn add to the change. Only the best scoring set of components is kept for each combination of hulls.
+		 * outfits are and on how often builds in complete games were worth that fraction of the change: no set is worth
+		 * more than estimateMaxOver times the change, and one worth less is common, as ammo, defense and minefields built in
+		 * the same turn add to the change. Only the best scoring set of components is kept for each combination of hulls.
 		 * @param ownerid	player id
 		 * @param count		number of warships built
 		 * @param target	military score change
 		 * @param turn		build turn
-		 * @return 			{ranked: [{ships: [{hull, engine, beam, torpedo}], value, diff}] best first, closest: the same
-		 * 					closest to the change first, phase: result of getBuildPhase, focus: result of getRaceFocus}
+		 * @return 			{ranked: [{ships: [{hull, engine, beam, torpedo}], value, diff, score, confidence}] best first, closest: the
+		 * 					same closest to the change first, phase: result of getBuildPhase, focus: result of getRaceFocus,
+		 * 					seen: warships of the player seen (getBuildPriors), listed: chance the hulls built are in ranked}
 		 */
 		estimateBuilds: function (ownerid, count, target, turn) {
 			var plugin = this;
@@ -2608,7 +2673,8 @@ function wrapper() { // wrapper for injection
 					var state = states[s];
 					for (var o = state.last; o < options.length; o++) {
 						var value = state.value + options[o].value;
-						if (value > target * 1.5)
+						//no set worth much more than the military change
+						if (value > target * this.estimateMaxOver)
 							continue;
 						var logp = state.logp + options[o].logp;
 						next.push({ value: value, logp: logp, last: o, picks: state.picks.concat([o]),
@@ -2621,7 +2687,8 @@ function wrapper() { // wrapper for injection
 
 			states.sort(function (a, b) { return (fitPenalty(a.value) - a.logp) - (fitPenalty(b.value) - b.logp); });
 			var toResult = function (state) {
-				return { ships: state.picks.map(function (o) { return options[o]; }), value: state.value, diff: state.value - target };
+				return { ships: state.picks.map(function (o) { return options[o]; }), value: state.value, diff: state.value - target,
+					score: fitPenalty(state.value) - state.logp };
 			};
 			var ranked = [];
 			var hullSets = {};
@@ -2633,10 +2700,43 @@ function wrapper() { // wrapper for injection
 				hullSets[hullSet] = true;
 				ranked.push(result);
 			}
+			var seen = priors.seen.fleet + priors.seen.fresh > 0;
+			this.setConfidence(ranked, priors.phase.key, seen, count);
 			//every set the search kept, closest to the military change first (likeliest first when equally close)
 			var closest = states.map(toResult);
 			closest.sort(function (a, b) { return Math.abs(a.diff) - Math.abs(b.diff); });
-			return { ranked: ranked, closest: closest.slice(0, this.estimateClosestResults), phase: priors.phase, focus: priors.focus };
+			return { ranked: ranked, closest: closest.slice(0, this.estimateClosestResults), phase: priors.phase, focus: priors.focus,
+				seen: priors.seen, listed: ranked.length > 0 ? this.getListedShare(priors.phase.key, seen, count) : 0 };
+		},
+
+		/**
+		 * How often the hulls built are among the listed builds in complete games (estimateListed)
+		 * @param phaseKey	key of estimatePhases
+		 * @param seen		true if a warship of the player was seen by the build turn or the turn after
+		 * @param count		warships built
+		 */
+		getListedShare: function (phaseKey, seen, count) {
+			var table = this.estimateListed[phaseKey] || this.estimateListed.nearCap;
+			var row = table[seen ? "seen" : "unseen"];
+			return row[Math.min(count, row.length) - 1];
+		},
+
+		/**
+		 * Set the confidence of each listed build: the chance its hulls are the ones built. The listed builds share the chance
+		 * that the hulls built are listed at all (getListedShare), by how much better each one scores than the others.
+		 * @param ranked	results of estimateBuilds, best first, each with its score (lower is better)
+		 */
+		setConfidence: function (ranked, phaseKey, seen, count) {
+			if (ranked.length == 0)
+				return;
+			var listed = this.getListedShare(phaseKey, seen, count);
+			var total = 0;
+			for (var r = 0; r < ranked.length; r++) {
+				ranked[r].confidence = Math.exp(-(ranked[r].score - ranked[0].score) / this.estimateConfidenceSpread);
+				total += ranked[r].confidence;
+			}
+			for (var r = 0; r < ranked.length; r++)
+				ranked[r].confidence *= listed / total;
 		},
 
 		//starbase builds that make up the military change the ships leave unexplained, from complete games before the ship limit:
@@ -2758,6 +2858,76 @@ function wrapper() { // wrapper for injection
 					best = ship.torpedoid;
 			}
 			return best ? vgap.getTorpedo(best) : null;
+		},
+
+		/**
+		 * Military score change from a player's minefields, comparing the fields seen in a turn with the turn before the
+		 * score row starts: mineValue points per mine unit gained or lost, less the torpedoes the laid mines were made of.
+		 * A field seen in both turns was laid in if it holds more than decay leaves; a field first seen with a higher id
+		 * than any field seen before was laid in the turn. Fields not seen in the turn are left out.
+		 * @param ownerid	player id
+		 * @param fromTurn	first turn of the score row
+		 * @param turn		turn of the score row
+		 * @return 			{fields, laid, units (change), torpedo, torpedoes (points used up), value} or null if no field of the
+		 * 					player was seen in the turn or the minefields of the turn before were not recorded
+		 */
+		getMineChange: function (ownerid, fromTurn, turn) {
+			var now = this.mineHistory[turn];
+			var prev = this.mineHistory[fromTurn - 1];
+			if (!now || !prev)
+				return null;
+			//highest minefield id seen before the turn, by turn
+			if (!this.mineIdCache || this.mineIdCache.history !== this.mineHistory) {
+				var turns = Object.keys(this.mineHistory).map(function (t) { return parseInt(t, 10); }).sort(function (a, b) { return a - b; });
+				var max = {}, highest = 0;
+				for (var k = 0; k < turns.length; k++) {
+					max[turns[k]] = highest;
+					for (var id in this.mineHistory[turns[k]])
+						highest = Math.max(highest, parseInt(id, 10));
+				}
+				this.mineIdCache = { history: this.mineHistory, max: max };
+			}
+			var known = this.mineIdCache.max[fromTurn] || 0;
+			var keep = Math.pow(1 - this.mineDecay, turn - fromTurn + 1);
+			var fields = 0, laid = 0, units = 0;
+			for (var id in now) {
+				if (now[id][0] != ownerid)
+					continue;
+				fields++;
+				var before = prev[id] && prev[id][0] == ownerid ? prev[id][1] : null;
+				if (before != null) {
+					units += now[id][1] - before;
+					laid += Math.max(0, now[id][1] - Math.floor(before * keep));
+				} else if (parseInt(id, 10) > known) {
+					units += now[id][1];
+					laid += now[id][1];
+				}
+			}
+			if (fields == 0)
+				return null;
+			//the torpedo the fleet carries most often, else the one the race usually builds
+			var torpedo = this.getFleetTorpedo(ownerid, turn);
+			if (!torpedo) {
+				var focus = this.getRaceFocus(ownerid, this.getBuildPhase(turn).key);
+				var shares = {}, best = 0;
+				for (var f = 0; f < focus.length; f++) {
+					for (var o = 0; o < focus[f].outfits.length; o++) {
+						var t = focus[f].outfits[o].torpedo;
+						if (t)
+							shares[t.id] = (shares[t.id] || 0) + focus[f].share * focus[f].outfits[o].share;
+					}
+				}
+				for (var id in shares) {
+					if (shares[id] > best) {
+						best = shares[id];
+						torpedo = vgap.getTorpedo(parseInt(id, 10));
+					}
+				}
+			}
+			var player = vgap.getPlayer(ownerid);
+			var perTorpedo = torpedo ? torpedo.id * torpedo.id * (player && player.raceid == 9 ? 4 : 1) : 0;
+			var torpedoes = perTorpedo > 0 ? laid / perTorpedo * torpedo.torpedocost : 0;
+			return { fields: fields, laid: laid, units: units, torpedo: torpedo, torpedoes: torpedoes, value: this.mineValue * units - torpedoes };
 		},
 
 		/**
@@ -3163,6 +3333,7 @@ function wrapper() { // wrapper for injection
 			}
 			html += "</select> " + row.newCapitals + " new warship" + (row.newCapitals == 1 ? "" : "s") + ", " +
 				row.newFreighters + " new freighter" + (row.newFreighters == 1 ? "" : "s") + ", military" + plugin.formatChange(row.militaryChange) + "</p>";
+			html += plugin.mineChangeHtml(row, color);
 
 			//the one ship every player builds on turn 1 appears on turn 2
 			var unknownFreighters = row.newFreighters;
@@ -3190,20 +3361,21 @@ function wrapper() { // wrapper for injection
 				html += "<p>" + unknownFreighters + " freighter" + (unknownFreighters == 1 ? "" : "s") + " built. Freighters do not count toward the military score, so their hulls cannot be estimated.</p>";
 			}
 
-			plugin.manualTarget = row.militaryChange;
+			plugin.manualTarget = row.buildChange;
 			plugin.manualTurn = row.turn;
 
 			//predicted configurations on the left, manual build on the right
 			html += "<div style='display:flex; flex-wrap:wrap; align-items:flex-start; gap:32px;'><div>";
 			if (!(row.newCapitals > 0)) {
 				html += "<p>No new warships this turn.</p>";
-				var builds = plugin.estimateStarbaseBuilds(player.id, [], row.militaryChange, row.turn);
+				var builds = plugin.estimateStarbaseBuilds(player.id, [], row.buildChange, row.turn);
 				if (builds) {
 					html += "<p style='color:" + color + "'>Starbase builds that make up the military change:<br>" + plugin.starbaseBuildsText(builds) +
-						"<br>Total " + Math.round(builds.value) + plugin.formatChange(Math.round(builds.value - row.militaryChange)) + "</p>";
+						"<br>Total " + Math.round(builds.value) + plugin.formatChange(Math.round(builds.value - row.buildChange)) + "</p>";
 				}
-			} else if (!(row.militaryChange > 0)) {
-				html += "<p>The military score did not rise this turn, so the new ships cannot be estimated (losses hide their value).</p>";
+			} else if (!(row.buildChange > 0)) {
+				html += "<p>The military score did not rise this turn" + (row.mines ? " once the minefields are taken out" : "") +
+					", so the new ships cannot be estimated (losses hide their value).</p>";
 			} else {
 				html += plugin.buildEstimateTableHtml(player.id, row, color);
 			}
@@ -3228,7 +3400,8 @@ function wrapper() { // wrapper for injection
 			if (buildPhase.key == "afterCap")
 				return html + "<p>The ship limit was reached before this turn, so builds are not estimated automatically. Use the manual build to test a configuration.</p>";
 
-			var estimate = plugin.estimateBuilds(ownerid, row.newCapitals, row.militaryChange, row.turn);
+			var estimate = plugin.estimateBuilds(ownerid, row.newCapitals, row.buildChange, row.turn);
+			html += plugin.seenPlayerHtml(estimate);
 			if (estimate.focus.length > 0) {
 				html += "<p style='color:#AAAAAA'>Usual builds of this race in this phase: " + estimate.focus.slice(0, 5).map(function (f) {
 					return f.hull.name + " (" + plugin.getShipRole(f.hull) + ", " + Math.round(f.share * 100) + "%)";
@@ -3249,13 +3422,117 @@ function wrapper() { // wrapper for injection
 			if (storedShips.length > 0) {
 				var match = results.filter(function (r) { return plugin.resultKey(r) == stored; });
 				var others = results.filter(function (r) { return plugin.resultKey(r) != stored; });
-				results = (match.length > 0 ? match : [plugin.predictedResult(storedShips, row.militaryChange)]).concat(others);
+				results = (match.length > 0 ? match : [plugin.predictedResult(storedShips, row.buildChange)]).concat(others);
 			}
 			addStarbase(results);
 			//kept for the Use buttons, which store a configuration as the predicted build of the turn
 			plugin.estimateCandidates = { ownerid: ownerid, turn: row.turn, ranked: results };
+			html += plugin.accuracyTableHtml(buildPhase.key);
 			html += "<h4>Predicted builds</h4>";
 			html += plugin.buildConfigTableHtml(results, color, stored, ownerid, row.turn);
+			return html;
+		},
+
+		/**
+		 * Html line flagging whether warships of the player were seen, which the estimate leans on, and the chance that
+		 * the hulls built are among the listed builds
+		 * @param estimate	result of estimateBuilds
+		 */
+		seenPlayerHtml: function (estimate) {
+			var seen = estimate.seen;
+			var text = seen.fleet + seen.fresh > 0 ?
+				"<span style='color:#33CC33; font-weight:bold;'>Seen player</span>: " + seen.fleet + " warship" + (seen.fleet == 1 ? "" : "s") + " seen before this turn" +
+				(seen.fresh > 0 ? ", " + seen.fresh + " first seen this turn or the next (likely the new builds)" : "") + "." :
+				"<span style='color:#FFA500; font-weight:bold;'>Unseen player</span>: no warships of this player seen yet, so the estimate rests on the race's usual builds.";
+			if (estimate.ranked.length > 0)
+				text += " Chance the hulls built are listed: " + this.formatConfidence(estimate.listed) + ".";
+			return "<p>" + text + "</p>";
+		},
+
+		/**
+		 * Version of the build estimate: a hash of the code and values in estimateModelParts, whitespace left out, so any
+		 * change to the estimate gives a new version. estimateAccuracy holds the version its values were measured on.
+		 * @return 		8 hex digits
+		 */
+		getModelVersion: function () {
+			var text = "";
+			for (var i = 0; i < this.estimateModelParts.length; i++) {
+				var part = this[this.estimateModelParts[i]];
+				text += this.estimateModelParts[i] + ":" + (typeof part == "function" ? part.toString() : JSON.stringify(part)) + ";";
+			}
+			text = text.replace(/\s+/g, "");
+			//32 bit FNV-1a
+			var hash = 0x811c9dc5;
+			for (var c = 0; c < text.length; c++)
+				hash = Math.imul(hash ^ text.charCodeAt(c), 0x01000193) >>> 0;
+			return ("0000000" + hash.toString(16)).slice(-8);
+		},
+
+		/**
+		 * Title of a phase by the share of the ship limit in use where it starts and ends, e.g. "25-50% Ship Limit"
+		 * @param phaseKey	key of estimatePhases
+		 * @return 			title, null for an unknown key
+		 */
+		getPhaseLabel: function (phaseKey) {
+			var opening = Math.round(100 * this.estimateOpeningFill), early = Math.round(100 * this.estimateEarlyFill);
+			var range = { opening: "<" + opening + "%", early: opening + "-" + early + "%", nearCap: early + "-100%", afterCap: "100%" }[phaseKey];
+			return range ? range + " Ship Limit" : null;
+		},
+
+		/**
+		 * Html table of how often the build estimate was right on complete games (estimateAccuracy), by phase, with the
+		 * model version it was measured on, flagged if the estimate changed since
+		 * @param phaseKey	phase of the shown turn, highlighted
+		 */
+		accuracyTableHtml: function (phaseKey) {
+			var accuracy = this.estimateAccuracy;
+			if (!accuracy || !accuracy.phases)
+				return "";
+			var top = this.estimateResults;
+			var html = "<table class='BuildPredictTable' border='0'><thead><tr>" +
+				"<th title='Build turns before the ship limit in complete games, each predicted without that game in the race builds'>Accuracy on complete games</th><th>Turns</th>" +
+				"<th title='The hulls with the engines, beams and torpedoes built are among the " + top + " listed builds'>Correct hulls and loadout</th>" +
+				"<th title='The top build has the hulls built'>Correct hulls in top 1</th>" +
+				"<th title='The hulls built are among the " + top + " listed builds'>Correct hulls in top " + top + "</th>" +
+				"</tr></thead><tbody>";
+			var rows = [["opening",this.getPhaseLabel("opening")], ["early", this.getPhaseLabel("early")], ["nearCap", this.getPhaseLabel("nearCap")]];
+			for (var r = 0; r < rows.length; r++) {
+				var row = accuracy.phases[rows[r][0]];
+				if (!row)
+					continue;
+				html += "<tr" + (rows[r][0] == phaseKey ? " style='font-weight:bold;' title='Phase of this turn'" : "") + ">" +
+					"<td>" + this.escapeHtml(rows[r][1]) + "</td><td>" + row.turns + "</td><td>" + row.loadout + "%</td><td>" + row.top1 + "%</td><td>" + row.listed + "%</td></tr>";
+			}
+			html += "</tbody></table>";
+			html += "<p style='color:#AAAAAA'>Model version " + accuracy.version + " (" + accuracy.model + "), measured " + accuracy.date + " on " + accuracy.games + " complete games.";
+			var current = this.getModelVersion();
+			if (current != accuracy.model)
+				html += " <span style='color:#FFA500'>The build estimate has changed since (now " + current + "), so these values may be out of date.</span>";
+			return html + "</p>";
+		},
+
+		/**
+		 * Confidence as a percentage, colored from red (unlikely) to green (likely)
+		 */
+		formatConfidence: function (p) {
+			var color = p >= 0.5 ? "#33CC33" : p >= 0.2 ? "#FFD700" : p >= 0.05 ? "#FFA500" : "#FF4040";
+			return "<span style='color:" + color + "; font-weight:bold;'>" + (p >= 0.995 ? ">99" : p < 0.01 ? "<1" : Math.round(p * 100)) + "%</span>";
+		},
+
+		/**
+		 * Html line with the military change from the minefields seen in a turn, which the build estimate leaves out
+		 * @param row	turn row from getBuildHistory
+		 * @param color	player color
+		 */
+		mineChangeHtml: function (row, color) {
+			var mines = row.mines;
+			if (!mines)
+				return "";
+			var html = "<p style='color:" + color + "'>Minefields seen: " + mines.fields + " field" + (mines.fields == 1 ? "" : "s") + ", " +
+				(mines.units >= 0 ? "+" : "") + mines.units + " mine units";
+			if (mines.laid > 0)
+				html += " (" + mines.laid + " laid" + (mines.torpedo ? ", likely from " + mines.torpedo.name + " torpedoes worth " + Math.round(mines.torpedoes) + " military" : "") + ")";
+			html += ", military" + this.formatChange(Math.round(mines.value)) + ". Left for builds:" + this.formatChange(row.buildChange) + "</p>";
 			return html;
 		},
 
@@ -3272,7 +3549,8 @@ function wrapper() { // wrapper for injection
 		buildConfigTableHtml: function (results, color, stored, ownerid, turn) {
 			var plugin = this;
 			var html = "<table class='BuildPredictTable' border='0'><thead><tr>" +
-				"<th></th><th>Ships</th><th>Role</th><th>Engine</th><th>Beams</th><th>Torpedoes</th><th>Ships Military</th><th>Starbase Builds</th><th>Difference</th>" +
+				"<th></th><th title='Chance these hulls are the ones built, from how often such estimates were right in complete games'>Confidence</th>" +
+				"<th>Ships</th><th>Engine</th><th>Beams</th><th>Torpedoes</th><th>Ships Military</th><th>Starbase Builds</th><th>Difference</th>" +
 				"</tr></thead><tbody>";
 			for (var r = 0; r < results.length; r++) {
 				//identical ships are listed once with a count, one line per kind of ship
@@ -3296,8 +3574,8 @@ function wrapper() { // wrapper for injection
 					"<td><button type='button' class='TestButton' title='Store as the predicted build of this turn' " +
 					"onClick='vgap.plugins[\"enemyShipListPlugin\"].storePrediction(" + r + ");'>Use</button></td>";
 				html += "<tr style='color:" + color + (predicted ? "; background:rgba(255,255,255,0.12); font-style:italic;" : "") + "'>" + use +
+					"<td>" + (results[r].confidence != null ? plugin.formatConfidence(results[r].confidence) : "---") + "</td>" +
 					column(function (g) { return g.count + "x " + g.ship.hull.name; }) +
-					column(function (g) { return plugin.getShipRole(g.ship.hull); }) +
 					column(function (g) { return g.ship.engine.name; }) +
 					column(function (g) { return g.ship.beam ? g.ship.beam.name : "---"; }) +
 					column(function (g) { return g.ship.torpedo ? g.ship.torpedo.name : "---"; }) +
@@ -3523,7 +3801,8 @@ function wrapper() { // wrapper for injection
 
 		/**
 		 * Get the recorded scoreboard of a player per turn with the change against the previous
-		 * recorded turn, and the known ships of that player with their first and last sighting
+		 * recorded turn, the military change from the minefields seen (mines) and the rest left for builds (buildChange),
+		 * and the known ships of that player with their first and last sighting
 		 * @param ownerid	player id
 		 * @return 			{turns (newest first), ships (by id)}
 		 */
@@ -3582,6 +3861,9 @@ function wrapper() { // wrapper for injection
 					row.freighterChange = now.f - prev.f;
 					row.newCapitals = Math.max(0, row.capitalChange);
 					row.newFreighters = Math.max(0, row.freighterChange);
+					//the military change left for builds once the minefields seen are taken out
+					row.mines = this.getMineChange(ownerid, row.fromTurn, row.turn);
+					row.buildChange = row.militaryChange - (row.mines ? Math.round(row.mines.value) : 0);
 				}
 				for (var i = 0; i < ships.length; i++) {
 					if (ships[i].firstSeen == row.turn && !ships[i].predicted)
@@ -3634,6 +3916,7 @@ function wrapper() { // wrapper for injection
 			html += "<style type='text/css'>.BuildPredictTable td{border-bottom:solid 1px #666; padding-right:16px} .BuildPredictTable th{text-align:left; padding-right:16px} .BuildPredictTable .Narrow{padding-right:8px; white-space:nowrap}</style>";
 			html += "<p><h1>Build Predictor</h1></p>";
 			html += "<p>Compares the scoreboard of each turn to the turn before. A rise in warships or freighters means at least that many were built (losses in the same turn hide builds). " +
+				"Minefields seen in a turn and the turn before count toward the military change (0.27 per mine unit, less the torpedoes laid as mines) and are left out of the build estimate; they are recorded as turns are loaded. " +
 				"Score history: " + numTurns + " turn" + (numTurns == 1 ? "" : "s") + " recorded. " +
 				"<button type='button' class='TestButton' onClick='vgap.plugins[\"enemyShipListPlugin\"].loadScoreHistoryFromServer();'>Load score history for all turns</button></p>";
 
@@ -3695,6 +3978,7 @@ function wrapper() { // wrapper for injection
 				html += "<div><h3>Score changes</h3>";
 				html += "<div id='BuildPredictScores' style='display:inline-block; overflow-y:auto;'><table class='BuildPredictTable' border='0'><thead><tr>" +
 					"<th>Turn</th><th>Score</th><th>Military</th>" +
+					"<th class='Narrow' title='Military change from the minefields seen: 0.27 per mine unit, less the torpedoes the laid mines used'>Mines</th>" +
 					"<th class='Narrow' title='Change against the previous turn; a rise is the minimum number built'>Warships</th>" +
 					"<th class='Narrow' title='Change against the previous turn; a rise is the minimum number built'>Freighters</th><th>Ids first seen</th>" +
 					"</tr></thead><tbody>";
@@ -3704,6 +3988,7 @@ function wrapper() { // wrapper for injection
 						"<td>" + plugin.formatTurnRange(row) + "</td>" +
 						"<td>" + row.score + plugin.formatChange(row.scoreChange) + "</td>" +
 						"<td>" + row.military + plugin.formatChange(row.militaryChange) + "</td>" +
+						"<td class='Narrow'>" + (row.mines ? plugin.formatChange(Math.round(row.mines.value)) : "") + "</td>" +
 						"<td class='Narrow'>" + row.capitals + plugin.formatChange(row.capitalChange) + "</td>" +
 						"<td class='Narrow'>" + row.freighters + plugin.formatChange(row.freighterChange) + "</td>" +
 						"<td>" + row.firstSeen.join(", ") + "</td>" +

@@ -30,6 +30,18 @@ def true_builds(r):
             built.append(b)
     return built
 
+def write_tsv(name, header, rows):
+    """save a report as a tab delimited file in reports/ (not in git) and return its path"""
+    folder = os.path.join(HERE, 'reports')
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name + '.tsv')
+    cell = lambda v: '' if v is None else ' '.join(str(v).split('\t'))
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        for row in [header] + rows:
+            f.write('\t'.join(cell(v) for v in row) + '\n')
+    print('saved', path)
+    return path
+
 def q(L, p):
     L = sorted(L)
     return L[int(p * (len(L) - 1))]
