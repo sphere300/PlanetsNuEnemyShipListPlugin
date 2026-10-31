@@ -13,7 +13,12 @@ for game in [g for g in sorted(os.listdir(root)) if len(sys.argv) < 4 or g == sy
         if not m:
             continue
         with open(os.path.join(gdir, name), encoding='utf-8') as f:
-            d = json.load(f)
+            text = f.read()
+        # as in analyze.py: players' messages can hold control characters, and a file of several documents is damaged
+        d, end = json.JSONDecoder(strict=False).raw_decode(text)
+        if text[end:].strip():
+            print('skipped damaged file', name, file=sys.stderr)
+            continue
         me = d['player']['id']
         t = int(m.group(2))
         # turn 0 files list every player with race 0

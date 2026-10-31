@@ -8,7 +8,7 @@ from common import HERE, GAMES, data_path
 force = '--force' in sys.argv
 args = [a for a in sys.argv[1:] if a != '--force']
 root = os.path.abspath(args[0] if args else GAMES)
-games = sorted(g for g in os.listdir(root) if os.path.isdir(os.path.join(root, g)))
+games = sorted(g for g in os.listdir(root) if os.path.isdir(os.path.join(root, g)) and g != '__pycache__')
 os.makedirs(data_path('games'), exist_ok=True)
 
 jobs = []

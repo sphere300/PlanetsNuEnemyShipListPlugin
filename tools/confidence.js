@@ -34,7 +34,7 @@ pool.evaluate({}, idx).then(R => {
     return ll;
   };
   let spread = 1, best = -Infinity;
-  for (let T = 0.25; T <= 20; T *= 1.05) { const ll = logLik(T); if (ll > best) { best = ll; spread = T; } }
+  for (let T = 0.02; T <= 20; T *= 1.05) { const ll = logLik(T); if (ll > best) { best = ll; spread = T; } }
   spread = +spread.toFixed(2);
   console.log('\t\testimateListed: {');
   const keys = Object.keys(listed);
