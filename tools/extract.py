@@ -8,7 +8,7 @@ from common import HERE, GAMES, data_path
 force = '--force' in sys.argv
 args = [a for a in sys.argv[1:] if a != '--force']
 root = os.path.abspath(args[0] if args else GAMES)
-games = sorted(g for g in os.listdir(root) if os.path.isdir(os.path.join(root, g)))
+games = sorted(g for g in os.listdir(root) if os.path.isdir(os.path.join(root, g)) and g != '__pycache__')
 os.makedirs(data_path('games'), exist_ok=True)
 
 jobs = []
@@ -32,7 +32,7 @@ with ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 1)) as pool:
         print(message)
 
 data = dict(records=[], builds=[])
-seen = dict(seen=[], tables={})
+seen = dict(seen=[], mines=[], tables={})
 for game in games:
     with open(data_path(os.path.join('games', 'data_%s.json' % game))) as f:
         d = json.load(f)
@@ -41,9 +41,10 @@ for game in games:
     with open(data_path(os.path.join('games', 'seen_%s.json' % game))) as f:
         d = json.load(f)
     seen['seen'] += d['seen']
+    seen['mines'] += d.get('mines', [])
     seen['tables'].update(d['tables'])
 with open(data_path('data.json'), 'w') as f:
     json.dump(data, f)
 with open(data_path('seen.json'), 'w') as f:
     json.dump(seen, f)
-print('games', len(games), 'player turns', len(data['records']), 'sightings', len(seen['seen']))
+print('games', len(games), 'player turns', len(data['records']), 'sightings', len(seen['seen']), 'minefield sightings', len(seen['mines']))

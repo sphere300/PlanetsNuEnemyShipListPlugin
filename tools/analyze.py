@@ -6,8 +6,14 @@ import json, os, sys, re, collections
 root, out = sys.argv[1], sys.argv[2]
 
 def load(path):
+    """a turn file, None for a damaged one: several documents run together, sometimes of another game. strict=False: players' messages can hold control characters"""
     with open(path, encoding='utf-8') as f:
-        return json.load(f)
+        text = f.read()
+    d, end = json.JSONDecoder(strict=False).raw_decode(text)
+    if text[end:].strip():
+        print('skipped damaged file', path, file=sys.stderr)
+        return None
+    return d
 
 def part(item, mc):
     if not item:
@@ -29,6 +35,9 @@ for game in [g for g in sorted(os.listdir(root)) if len(sys.argv) < 4 or g == sy
         prev = None
         for t in sorted(turns):
             d = load(turns[t])
+            if d is None:
+                prev = None
+                continue
             hulls = {h['id']: h for h in d['hulls']}
             engines = {e['id']: e for e in d['engines']}
             beams = {b['id']: b for b in d['beams']}
@@ -85,7 +94,8 @@ for game in [g for g in sorted(os.listdir(root)) if len(sys.argv) < 4 or g == sy
                        capitals=score and score['capitalships'], inventorychange=score and score['inventorychange'], orders=orders, shipchange=score and score['shipchange'],
                        freighterchange=score and score['freighterchange'],
                        model=model, shipval=shipval, ammoval=ammoval, sbdef=sbdef, sbfig=sbfig, pdef=pdef, mines=mines)
-            if prev is not None:
+            # only from the turn before: across a missing turn the new ships are not one turn's builds
+            if prev is not None and prev['turn'] == t - 1:
                 new = [i for i in ships if i not in prev['ships']]
                 rec['new'] = [dict(ships[i], id=i) for i in new]
                 rec['prevorders'] = prev['rec']['orders']
@@ -93,7 +103,7 @@ for game in [g for g in sorted(os.listdir(root)) if len(sys.argv) < 4 or g == sy
                     builds.append(dict(ships[i], id=i, game=game, player=pid, turn=t, raceid=rec['raceid']))
                 rec['d'] = {k: rec[k] - prev['rec'][k] for k in ('model', 'shipval', 'ammoval', 'sbdef', 'sbfig', 'pdef', 'mines')}
             records.append(rec)
-            prev = dict(ships=ships, rec=rec)
+            prev = dict(ships=ships, rec=rec, turn=t)
         print(game, 'player', pid, 'turns', len(turns), file=sys.stderr)
 
 with open(out, 'w') as f:

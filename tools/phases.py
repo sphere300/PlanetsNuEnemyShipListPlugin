@@ -1,6 +1,6 @@
-"""Hull size and component tech of the ships built, by how full the ship limit was. Usage: python phases.py"""
+"""Hull size and component tech of the ships built, by how full the ship limit was. Saves reports/phases.tsv. Usage: python phases.py"""
 import json, collections, statistics as st
-from common import true_builds, q, load, data_path
+from common import true_builds, q, load, data_path, write_tsv
 d = load('data.json'); S = load('seen.json')
 prevtot = {}
 for r in d['records']:
@@ -45,3 +45,7 @@ for k in order:
 for k in order:
     c = collections.Counter(x['torp'] for x in B[k] if x['torp']); n = sum(c.values())
     print(k, 'torp tech share:', ' '.join('%d:%.0f%%' % (e, 100*c[e]/n) for e in sorted(c)))
+def avg(L): L = [x for x in L if x is not None]; return round(sum(L) / len(L), 2) if L else None
+write_tsv('phases', ['fill', 'ships', 'median value', 'hull tech', 'hull rank', 'mass', 'engine tech', 'beam tech', 'torpedo tech', 'full beams', 'full torpedoes'],
+          [[k, len(B[k]), q([x['value'] for x in B[k]], .5), avg([x['tech'] for x in B[k]]), avg([x['rank'] for x in B[k]]), round(st.mean(x['mass'] for x in B[k])),
+            avg([x['eng'] for x in B[k]]), avg([x['beam'] for x in B[k]]), avg([x['torp'] for x in B[k]]), avg([x['fullb'] for x in B[k]]), avg([x['fullt'] for x in B[k]])] for k in order if B[k]])

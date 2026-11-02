@@ -1,9 +1,13 @@
 # Build predictor tuning
 
-Scripts that tune the Build Predictor in `EnemyShips.js` (`estimatePhases`, `estimateRaceFocus`) on the complete games in `../CompleteGames`.
+Scripts that train the Build Predictor in `EnemyShips.js` (`estimateRanker`, `estimatePhases`, `estimateRaceFocus`) on the complete games in `../CompleteGames`.
 They run the plugin's own estimator code against every build turn, so the scores show how the plugin itself performs.
 
-Requires Python 3 and Node.js. Generated files go to `data/` (not in git, about 320 MB for 25 games).
+The search (`estimateBuilds`, using `estimatePhases` and `estimateRaceFocus`) keeps up to 200 sets of ships for a turn. A LightGBM
+LambdaMART ranker (`estimateRanker`) then orders them, from what `getBuildFeatures` says about each set. A build the search does not
+keep cannot be listed; `rankdata.js` prints how often the hulls built are among the kept sets, which is the limit on `hulls in top5`.
+
+Requires Python 3 with `numpy` and `lightgbm`, and Node.js. Generated files go to `data/` (not in git, about 3 GB for 102 games).
 
 ## Retune after adding games
 
@@ -14,24 +18,52 @@ python extract.py        # extract new games (in parallel) and merge everything 
 python mkcases.py        # build turns to test on
 python focus.py          # race focus tables: all games, plus one per left-out game for testing
 python writefocus.py     # write the all-games table into EnemyShips.js (estimateRaceFocus)
-node report.js           # accuracy per phase and per game
-node tune.js             # tune estimatePhases; copy the BEST lines into EnemyShips.js
-node report.js           # check the result
+node rankdata.js         # the sets the search keeps for each build turn, with labels and features
+python rank.py           # learn the ranker: one model per fold of games, then the final one (data/ranker.json)
+python writeranker.py    # write the final model into EnemyShips.js (estimateRanker)
+node confidence.js       # refit the confidence shown for the listed builds; copy the printed lines into EnemyShips.js
+node report.js --notes "what changed"   # copy the printed estimateAccuracy line into EnemyShips.js; adds a row to model_history.tsv
 ```
 
-Extraction reads several GB of turn files and takes a few minutes; `extract.py --force` re-extracts games already done.
+Every report is also saved as a tab delimited file in `reports/` (not in git), for example `reports/report.tsv`.
+
+Extraction reads about 1 GB of turn files per game and takes a few minutes for each batch of games; `extract.py --force` re-extracts games already done.
+Damaged turn files (several documents run together, sometimes of another game) are skipped with a warning; the following turn then has no builds to test.
+
+Run `rankdata.js`, `rank.py` and `writeranker.py` again after any change to the search or to the features: `data/ranker.json` only fits the features it was learned on.
+`node tune.js` still tunes `estimatePhases`, but now only decides which sets the search keeps; run it with `RANKER=0` to judge the search alone, then retrain the ranker.
 
 ## How scores are measured
 
 - Only build turns before the ship limit count; after it the plugin does not estimate builds automatically.
 - Turn 2 is measured as the plugin sees it: from the starting military (`startMilitary`) rather than the empty turn 1
   scoreboard, and from the turn 3 changes when the turn 2 scoreboard still shows turn 1.
-- Each game is scored with a focus table learned from the other games only (leave one game out), so the scores show
-  how well the plugin predicts a game it has not seen.
+- Each game is scored with a focus table learned from the other games only (leave one game out) and a ranker learned on the
+  folds of games it is not in, so the scores show how well the plugin predicts a game it has not seen. `RANKER=0` ranks by the score of the search, to compare.
 - `top1`: the top prediction has exactly the hulls built. `ships right in top1`: share of the built ships whose hull is in the
-  top prediction. `hulls in top8`: the hulls built are among the listed predictions. `full config`: the same with engine, beams and torpedoes.
+  top prediction. `hulls in top5`: the hulls built are among the listed predictions (`estimateResults`, 5). `full config`: the same with engine, beams and torpedoes.
+- The military change is taken as the plugin takes it: the change from the minefields other players saw in the build turn and
+  the turn before (`getMineChange`) is left out first. `MINES=0` keeps the full change, to compare.
+- `seen` / `unseen`: build turns where other players had seen a warship of the player by the build turn or the turn after, or not.
+- No listed prediction is worth more than 1.25 times the military change left for builds (`estimateMaxOver`).
 - `tune.js` changes one value at a time and keeps a change only if it raises the score and improves at least as many games
   as it worsens. Without that rule the tuning overfits to individual games.
+
+## Model version and accuracy table
+
+The Build Predictor shows above the predicted builds how often the estimate was right on the complete games (correct hulls
+and loadout among the listed builds, correct hulls in the top build, correct hulls among the listed builds), from
+`estimateAccuracy` in `EnemyShips.js`, with the model version: a hash of everything the estimate depends on
+(`estimateModelParts`, see `getModelVersion`) and a number that goes up whenever the hash changes. The plugin flags the
+table when its code no longer matches the measured hash. `node report.js` (without overrides) prints the hash and, when it
+changed, the `estimateAccuracy` line to copy into `EnemyShips.js`. Retuning should raise the scores; have a good reason when
+they drop.
+
+`model_history.tsv` (in git) keeps a row for every evaluation of the model: version, model id (the hash), date, games and
+turns tested, number of builds listed, the three scores for each phase (titled by the share of the ship limit in use, e.g. `25-50% Ship Limit`, as in the plugin), and notes on what changed.
+`report.js` without overrides
+adds the row and prints the change against the row before; pass `--notes "..."` with what changed in the model and, if a
+score dropped, why. A run of the same model with the same scores is only added with notes.
 
 ## Other scripts
 
@@ -43,11 +75,12 @@ Extraction reads several GB of turn files and takes a few minutes; `extract.py -
 | `python roles.py` | share of fighters, sweepers, scouts and utility ships per race and phase |
 | `node starbase.js` | how well the starbase builds (`estimateStarbaseBuilds`, `estimateStarbaseItems`) make up the rest of the military change, and which kinds of build they pick |
 | `python ratio.py` | how much of the military change the ships built explain (source of the `fit` arrays) |
+| `node confidence.js` | fits `estimateListed` and `estimateConfidenceSpread`, and how well the confidence matches what was built |
 | `python phases.py` | hull size and component tech of the ships built, by how full the ship limit was |
 
 `report.js`, `tune.js` and `breakdown.js` take parameter overrides as JSON, for example
 `node report.js '{"estimatePhases":{"early":{"focusWeight":10}}}'`. Set `PLUGIN` to test another copy of the plugin
 and `FOCUS` to use another focus table from `data/` (for example one made with `python focus.py 10 focus_m10.json`).
 
-`analyze.py` and `sightings.py` extract one game each and are run by `extract.py`; `common.py`, `evalcore.js` and
+`analyze.py` and `sightings.py` (ships and minefields seen by other players) extract one game each and are run by `extract.py`; `common.py`, `evalcore.js` and
 `pool.js` are shared code.

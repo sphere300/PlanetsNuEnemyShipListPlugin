@@ -3,7 +3,8 @@ const { Worker, isMainThread, parentPort, workerData } = require('worker_threads
 if (!isMainThread) {
   const core = require('./evalcore.js')(workerData.logo);
   const base = JSON.parse(JSON.stringify(core.plugin.estimatePhases));
-  parentPort.on('message', ({ id, overrides, cases }) => {
+  parentPort.on('message', ({ id, overrides, cases, dump }) => {
+    if (dump) return parentPort.postMessage({ id, results: core.dump(cases, dump) });
     core.plugin.estimatePhases = JSON.parse(JSON.stringify(base));
     for (const k in overrides) {
       if (k == 'estimatePhases') for (const p in overrides[k]) Object.assign(core.plugin.estimatePhases[p], overrides[k][p]);
@@ -28,6 +29,12 @@ if (!isMainThread) {
       const parts = await Promise.all(workers.map((w, i) => new Promise(res => { const id = nextId++; waiting.set(id, res); w.postMessage({ id, overrides, cases: shards[i] }); })));
       return parts.flat();
     }
-    return { evaluate, close: () => workers.forEach(w => w.terminate()) };
+    // each worker writes the candidate sets of its cases to <prefix><worker>.bin (rankdata.js)
+    async function dump(caseIdx, prefix) {
+      await readyP;
+      const shards = workers.map((w, i) => caseIdx.filter((_, j) => j % n == i));
+      return Promise.all(workers.map((w, i) => new Promise(res => { const id = nextId++; waiting.set(id, res); w.postMessage({ id, cases: shards[i], dump: prefix + i + '.bin' }); })));
+    }
+    return { evaluate, dump, close: () => workers.forEach(w => w.terminate()) };
   };
 }
