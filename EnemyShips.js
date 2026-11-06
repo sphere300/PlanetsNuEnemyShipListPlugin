@@ -379,6 +379,7 @@ function wrapper() { // wrapper for injection
 		showShipFilter: false,
 		turnFrom: null,	//null = default: last defaultTurnSpan turns
 		defaultTurnSpan: 15,
+		shipHistoryMargin: 100,	//light years shown around a ship's path by 'Show ship history'
 		turnTo: 0,		//0 = current turn
 		scoreVisibleTurns: 15,	//rows visible in the build predictor score table before it scrolls
 		estimateTurn: null,		//turn shown in the build estimate, null = latest turn with new warships
@@ -868,6 +869,7 @@ function wrapper() { // wrapper for injection
 
 					oldShipHistory = null;
 					var oldPredictedLoadout = null;
+					var oldMinMass = null;
 					//loop through list of enemy ships and delete ship with same id
 					for (var es = 0; es < this.enemyShipList.length; es++) {
 						if (this.enemyShipList[es].id == ship.objectid) {
@@ -877,6 +879,7 @@ function wrapper() { // wrapper for injection
 							if (deletedData && deletedData.length > 0 && deletedData[0].hullid == ship.hullid) {
 								oldShipHistory = deletedData[0].history;
 								oldPredictedLoadout = deletedData[0].predictedLoadout;
+								oldMinMass = this.getMinSeenMass(deletedData[0]);
 							}
 							break;
 						}
@@ -908,6 +911,9 @@ function wrapper() { // wrapper for injection
 
 					if (oldShipHistory) {
 						n.history = oldShipHistory;
+						//lightest mass the ship was ever seen with
+						if (oldMinMass != null)
+							n.minMass = n.mass > 0 ? Math.min(oldMinMass, n.mass) : oldMinMass;
 					}
 					if (oldPredictedLoadout && !this.isSharedPlayer(n.ownerid)) {
 						n.predictedLoadout = oldPredictedLoadout;
@@ -998,6 +1004,7 @@ function wrapper() { // wrapper for injection
 
 				oldShipHistory = null;
 				var oldPredictedLoadout = null;
+					var oldMinMass = null;
 				//loop through list of enemy ships and delete ship with same id
 				for (var es = 0; es < this.enemyShipList.length; es++) {
 					if (this.enemyShipList[es].id == vgap.ships[i].id) {
@@ -1007,6 +1014,7 @@ function wrapper() { // wrapper for injection
 						if (deletedData && deletedData.length > 0 && deletedData[0].hullid == vgap.ships[i].hullid) {
 							oldShipHistory = deletedData[0].history;
 							oldPredictedLoadout = deletedData[0].predictedLoadout;
+								oldMinMass = this.getMinSeenMass(deletedData[0]);
 						}
 						break;
 					}
@@ -1038,6 +1046,9 @@ function wrapper() { // wrapper for injection
 				n.neutronium = vgap.ships[i].neutronium;
 				if (oldShipHistory) {
 					n.history = oldShipHistory;
+						//lightest mass the ship was ever seen with
+						if (oldMinMass != null)
+							n.minMass = n.mass > 0 ? Math.min(oldMinMass, n.mass) : oldMinMass;
 				}
 				//a loadout merged from a predicted build fills in what this sighting still does not show
 				if (oldPredictedLoadout && !this.isSharedPlayer(n.ownerid)) {
@@ -2115,7 +2126,7 @@ function wrapper() { // wrapper for injection
 					html += "<td style='color:" + color + "'>" + race.shortname + "</td>";
 					html += "<td style='color:" + color + "'>" + ship.id + "</td>";
 					html += "<td title='" + hull.name + "'><img class='TinyIcon' src='" + hullImg(ship.hullid) + "'/><div style='display: none;'>" + hull.name + "</div></td>";
-					html += "<td style='color:" + color + "'>" + ship.name + vgap.plugins["enemyShipListPlugin"].mergeControlHtml(ship) + "</td>";
+					html += "<td style='color:" + color + "'>" + ship.name + vgap.plugins["enemyShipListPlugin"].mergeControlHtml(ship) + vgap.plugins["enemyShipListPlugin"].historyButtonHtml(ship) + "</td>";
 					if (vgap.plugins["enemyShipListPlugin"].enableEdit) {
 						html += "<td><button type='button' class='TestButton' onClick='vgap.plugins[\"enemyShipListPlugin\"].removeShip(" + ship.id + "); " +
 							"vgap.plugins[\"enemyShipListPlugin\"].showEnemyShipsView(" + view + ");'> Delete </button></td>";
@@ -2134,7 +2145,7 @@ function wrapper() { // wrapper for injection
 					html += loadoutTd("beamid") + beam_weapons + "</td>";
 					html += loadoutTd("torpedoid") + secondary_weapons + "</td>";
 					html += loadoutTd("ammo") + ammo + "</td>";
-					html += "<td style='color:" + color + "'>" + ship.mass + "</td>";
+					html += "<td style='color:" + color + "; cursor:help;' title='" + vgap.plugins["enemyShipListPlugin"].massTooltip(ship) + "'>" + ship.mass + "</td>";
 					html += "<td style='color:" + color + "'>" + crew + "</td>";
 					html += "<td style='color:" + color + "'>" + damage + "</td>";
 
@@ -3613,6 +3624,136 @@ function wrapper() { // wrapper for injection
 		},
 
 		/**
+		 * Html of the button that shows a seen ship's movement history on the starmap
+		 */
+		historyButtonHtml: function (ship) {
+			if (ship.predicted || !(ship.id > 0))
+				return "";
+			return " <button type='button' class='TestButton' title='Open the starmap filtered to this ship, showing all its sightings' " +
+				"onMouseDown='event.preventDefault();' onClick='event.stopPropagation(); vgap.plugins[\"enemyShipListPlugin\"].showShipHistory(" + ship.id + ");'>History</button>";
+		},
+
+		/**
+		 * Open the starmap with the map tools and the enemy ship tool expanded, filtered to a single ship with its whole
+		 * movement history, zoomed to fit the path plus a margin of shipHistoryMargin light years
+		 * @param shipId	id of the ship in the list
+		 */
+		showShipHistory: function (shipId) {
+			var ship = this.getShipById(shipId);
+			if (!ship)
+				return;
+			vgap.showMap();
+			$("#MapControls").show();
+
+			//the whole history, up to the viewed turn
+			this.turnFrom = this.getSeenTurns(ship).first;
+			this.turnTo = 0;
+			this.drawSelection[ship.ownerid] = true;
+			this.shipFilterId = ship.id;
+			this.showShipFilter = true;
+			if (this.mobile_version) {
+				this.menuactive = true;
+				this.showSelectionTool();
+			} else {
+				this.showOverlayFilter();
+			}
+
+			//fit the path and the margin on the screen
+			var sightings = this.getSightingsInRange(ship, this.getTurnRange());
+			if (sightings.length == 0)
+				sightings = [{ x: ship.x, y: ship.y }];
+			var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+			for (var s = 0; s < sightings.length; s++) {
+				minX = Math.min(minX, sightings[s].x);
+				maxX = Math.max(maxX, sightings[s].x);
+				minY = Math.min(minY, sightings[s].y);
+				maxY = Math.max(maxY, sightings[s].y);
+			}
+			var width = maxX - minX + 2 * this.shipHistoryMargin;
+			var height = maxY - minY + 2 * this.shipHistoryMargin;
+			var zoom = Math.min($(window).width() / width, $(window).height() / height);
+			if (isFinite(zoom) && zoom > 0) {
+				if (vgap.map.setZoom)
+					vgap.map.setZoom(zoom);
+				else
+					vgap.map.zoom = zoom;
+			}
+			vgap.map.centerMap((minX + maxX) / 2, (minY + maxY) / 2);
+			vgap.map.draw();
+		},
+
+		/**
+		 * Lightest mass a seen ship was observed with, null if never seen with a mass
+		 */
+		getMinSeenMass: function (ship) {
+			var mass = parseInt(ship.mass, 10);
+			var min = parseInt(ship.minMass, 10);
+			if (!(mass > 0))
+				return min > 0 ? min : null;
+			return min > 0 ? Math.min(min, mass) : mass;
+		},
+
+		/**
+		 * Mass of a ship without fuel, cargo, torpedoes or fighters: hull, beams and launchers (engines weigh nothing).
+		 * Where the beams or launchers are not known, the lightest case has none and the heaviest has all slots
+		 * filled with the heaviest kind.
+		 * @return 		{min, max}, null if the hull is unknown
+		 */
+		getEmptyMassRange: function (ship) {
+			var hull = vgap.getHull(ship.hullid);
+			if (!hull)
+				return null;
+			var range = { min: hull.mass, max: hull.mass };
+			var add = function (slots, id, count, lookup, list) {
+				if (!(slots > 0))
+					return;
+				var item = id > 0 && count > 0 ? lookup(id) : null;
+				if (item) {
+					range.min += item.mass * count;
+					range.max += item.mass * count;
+					return;
+				}
+				var heaviest = 0;
+				for (var i = 0; i < list.length; i++)
+					heaviest = Math.max(heaviest, list[i].mass || 0);
+				range.max += heaviest * slots;
+			};
+			add(hull.beams, parseInt(ship.beamid, 10), parseInt(ship.beams, 10), function (id) { return vgap.getBeam(id); }, vgap.beams);
+			add(hull.launchers, parseInt(ship.torpedoid, 10), parseInt(ship.torps, 10), function (id) { return vgap.getTorpedo(id); }, vgap.torpedos);
+			return range;
+		},
+
+		/**
+		 * Hover text for the mass of a ship in the ship lists: the possible empty mass, the lightest mass seen, the
+		 * fuel tank and cargo hold, and the fuel, cargo and ammo the ship carried at its lightest sighting for the
+		 * lightest and heaviest empty mass. Predicted ships were never seen, so what needs a sighting is '?'.
+		 * @return 		text safe to put in a single quoted title attribute
+		 */
+		massTooltip: function (ship) {
+			var hull = vgap.getHull(ship.hullid);
+			if (!hull)
+				return "";
+			var range = this.getEmptyMassRange(ship);
+			var observed = ship.predicted ? null : this.getMinSeenMass(ship);
+			var capacity = hull.fueltank + hull.cargo;
+			var lines = [];
+			lines.push("Empty mass (no fuel, cargo, torpedoes or fighters): " + (range.min == range.max ? range.min : range.min + " to " + range.max) + " kt");
+			lines.push("Lightest mass seen: " + (observed != null ? observed + " kt" : "?"));
+			lines.push("Fuel tank: " + hull.fueltank + " kt, cargo hold: " + hull.cargo + " kt (" + capacity + " kt total)");
+			var loadLine = function (label, empty) {
+				if (observed == null)
+					return label + " (" + empty + " kt): carried ? kt, free ? kt";
+				var carried = observed - empty;
+				return label + " (" + empty + " kt): carried " + carried + " kt fuel/cargo/ammo, at least " + (capacity - carried) + " kt of fuel/cargo space free";
+			};
+			lines.push("At the lightest sighting:");
+			lines.push(loadLine("  Lightest empty mass", range.min));
+			if (range.max != range.min)
+				lines.push(loadLine("  Heaviest empty mass", range.max));
+			return this.escapeHtml(lines.join("\n")).replace(/\n/g, "&#10;");
+		},
+
+		/**
 		 * Html table row of a predicted build in the ship lists, with the columns of a seen ship and marked as predicted
 		 */
 		predictedShipRowHtml: function (ship) {
@@ -3643,7 +3784,7 @@ function wrapper() { // wrapper for injection
 			html += td + beams + "</td>";
 			html += td + secondary + "</td>";
 			html += td + "?</td>";
-			html += td + hull.mass + "</td>";
+			html += "<td style='color:" + this.colorsA[ship.ownerid] + "; font-style:italic; cursor:help;' title='" + this.massTooltip(ship) + "'>" + hull.mass + "</td>";
 			html += td + "?</td>";
 			html += td + "?</td>";
 			html += "</tr>";
@@ -4408,7 +4549,7 @@ function wrapper() { // wrapper for injection
 					html += "<tr style='color:" + color + "'>" +
 						"<td>" + entry.ship.id + "</td>" +
 						"<td>" + vgap.getHull(entry.ship.hullid).name + "</td>" +
-						"<td>" + plugin.escapeHtml(entry.ship.name) + plugin.mergeControlHtml(entry.ship) + "</td>" +
+						"<td>" + plugin.escapeHtml(entry.ship.name) + plugin.mergeControlHtml(entry.ship) + plugin.historyButtonHtml(entry.ship) + "</td>" +
 						"<td>" + (entry.type == "capital" ? "Warship" : "Freighter") + "</td>" +
 						"<td>" + entry.firstSeen + "</td>" +
 						"<td>" + entry.lastSeen + "</td>" +
