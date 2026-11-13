@@ -380,6 +380,9 @@ function wrapper() { // wrapper for injection
 		turnFrom: null,	//null = default: last defaultTurnSpan turns
 		defaultTurnSpan: 15,
 		shipHistoryMargin: 100,	//light years shown around a ship's path by 'Show ship history'
+		transferColumnWidth: 210,	//width of each column of the transfer screen (a row needs about 190px)
+		transferControlWidth: 120,	//width of the client's amount panel on the right of the transfer screen
+		transferColumnGap: 20,		//space between the columns of the transfer screen
 		turnTo: 0,		//0 = current turn
 		scoreVisibleTurns: 15,	//rows visible in the build predictor score table before it scrolls
 		estimateTurn: null,		//turn shown in the build estimate, null = latest turn with new warships
@@ -3624,6 +3627,41 @@ function wrapper() { // wrapper for injection
 		},
 
 		/**
+		 * Lay out the NU transfer screen in two columns: minerals on the left, supplies, megacredits and clans on the
+		 * right, with the other rows (neutronium, fighters, torpedoes, totals) where the client put them. Widens the
+		 * dialog to fit both columns, except in the mobile UI where it is full screen already.
+		 */
+		layoutTransferScreen: function () {
+			var form = $("#TransferScreen #tform");
+			if (form.length == 0)
+				return;
+			var leftIds = ["dur", "tri", "mol"], rightIds = ["supplies", "mc", "clans"];
+			var first = form.children("#" + leftIds.concat(rightIds).join(", #")).first();
+			if (first.length == 0)
+				return;
+			//room for both columns and the client's amount panel (#tcontrol), which covers the right 120px of the dialog
+			var needed = 2 * this.transferColumnWidth + this.transferColumnGap + this.transferControlWidth + 10;
+			if (!this.transferStyleAdded) {
+				//the mobile UI caps the dialog at 420px wide; lift that for the transfer dialog only
+				$("<style type='text/css'>#MoreScreen.MoreFullScreen.MoreTransfer { max-width: " + needed + "px; }</style>").appendTo("head");
+				this.transferStyleAdded = true;
+			}
+			if (!vgap.more.hasClass("MoreFullScreen"))
+				vgap.more.width(needed);
+			//a screen too narrow for both columns keeps the client's single column
+			if (vgap.more.width() < needed - 1)
+				return;
+			var column = "<div style='flex:0 0 " + this.transferColumnWidth + "px; position:relative;'></div>";
+			var columns = $("<div class='EnemyShipTransferColumns' style='display:flex; align-items:flex-start; gap:" + this.transferColumnGap + "px;'></div>").insertBefore(first);
+			var left = $(column).appendTo(columns);
+			var right = $(column).appendTo(columns);
+			for (var i = 0; i < leftIds.length; i++)
+				form.children("#" + leftIds[i]).appendTo(left);
+			for (var i = 0; i < rightIds.length; i++)
+				form.children("#" + rightIds[i]).appendTo(right);
+		},
+
+		/**
 		 * Html of the button that shows a seen ship's movement history on the starmap
 		 */
 		historyButtonHtml: function (ship) {
@@ -5250,6 +5288,20 @@ function wrapper() { // wrapper for injection
 		}
 
 	};
+
+	/**
+	 * Overload the transfer screen: a wider dialog with duranium, tritanium and molybdenum in a column on the left and
+	 * supplies, megacredits and clans in a column on the right. The screen is redrawn on every change, so the layout is
+	 * applied after each draw.
+	 */
+	if (typeof vgapTransferScreen != "undefined") {
+		vgap.plugins["enemyShipListPlugin"].oldTransferRender = vgapTransferScreen.prototype.renderScreen;
+
+		vgapTransferScreen.prototype.renderScreen = function () {
+			vgap.plugins["enemyShipListPlugin"].oldTransferRender.apply(this, arguments);
+			vgap.plugins["enemyShipListPlugin"].layoutTransferScreen();
+		};
+	}
 
 	vgap.plugins["enemyShipListPlugin"].oldShowInfo = vgapMap.prototype.showInfo;
 
