@@ -23,6 +23,11 @@ module.exports = function setup(useLogo) {
     if (t >= s.infoturn) Object.assign(s, { hullid: hull, engineid: eng, beamid: beam, torpedoid: torp, infoturn: t });
   }
   const lists = {}; for (const k in byTarget) lists[k] = Object.values(byTarget[k]);
+  // sightings do not hold the number of launchers: the hull's, as seen ships are almost always fully armed
+  for (const k in lists) {
+    const T = seen.tables[k.split('|')[0]], H = new Map(T.hulls.map(h => [h.id, h]));
+    for (const s of lists[k]) s.torps = s.torpedoid > 0 && H.get(s.hullid) ? H.get(s.hullid).launchers : 0;
+  }
   // minefields as the plugin records them, from every other player's view
   const mines = {};
   if (process.env.MINES != '0')
@@ -44,9 +49,11 @@ module.exports = function setup(useLogo) {
   const phaseLabel = (p) => plugin.getPhaseLabel(p) || p;
   const hk = r => r.ships.map(s => s.hull.id).sort((a, b) => a - b).join(',');
   const fk = r => r.ships.map(s => s.hull.id + '|' + s.engine.id + '|' + (s.beam ? s.beam.id : 0) + '|' + (s.torpedo ? s.torpedo.id : 0)).sort().join(',');
-  // ranker models learned without each game (rank.py); RANKER=0 ranks by the score of the search
-  const rankerFile = path.join(DATA, 'ranker.json');
+  // ranker models learned without each game (rank.py; RANKERFILE names another file in data/); RANKER=0 ranks by the score of the search
+  const rankerFile = path.join(DATA, process.env.RANKERFILE || 'ranker.json');
   const ranker = process.env.RANKER != '0' && useLogo && fs.existsSync(rankerFile) ? JSON.parse(fs.readFileSync(rankerFile)) : null;
+  // the plugin's view of a player's game: tables, scoreboard history, fleet seen by the others, minefields
+  const setPlayer = (game, player) => setCase({ game, player, turn: 1, target: 0 });
   const setCase = (c) => {
     Object.assign(vgap, tables[c.game]);
     plugin.estimateRaceFocus = useLogo ? focus.logo[c.game] : focus.all;
@@ -103,5 +110,5 @@ module.exports = function setup(useLogo) {
     fs.closeSync(fd);
     return { file: path.basename(file), rows, turns, found };
   }
-  return { plugin, C, phaseOf, phaseLabel, run, dump, rankColumns, games, phases };
+  return { plugin, C, setPlayer, setCase, phaseOf, phaseLabel, run, dump, rankColumns, games, phases };
 };

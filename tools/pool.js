@@ -2,15 +2,18 @@
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 if (!isMainThread) {
   const core = require('./evalcore.js')(workerData.logo);
-  const base = JSON.parse(JSON.stringify(core.plugin.estimatePhases));
+  const base = JSON.parse(JSON.stringify(core.plugin.estimatePhases)), saved = {};
   parentPort.on('message', ({ id, overrides, cases, dump }) => {
     if (dump) return parentPort.postMessage({ id, results: core.dump(cases, dump) });
     core.plugin.estimatePhases = JSON.parse(JSON.stringify(base));
+    // put back the values earlier overrides replaced
+    for (const k in saved) core.plugin[k] = saved[k];
     for (const k in overrides) {
+      if (k != 'estimatePhases' && !(k in saved)) saved[k] = core.plugin[k];
       if (k == 'estimatePhases') for (const p in overrides[k]) Object.assign(core.plugin.estimatePhases[p], overrides[k][p]);
       else core.plugin[k] = overrides[k];
     }
-    parentPort.postMessage({ id, results: cases.map(i => core.run(core.C.cases[i])) });
+    parentPort.postMessage({ id, results: cases.map(i => Object.assign(core.run(core.C.cases[i]), { i })) });
   });
   parentPort.postMessage({ ready: true });
 } else {

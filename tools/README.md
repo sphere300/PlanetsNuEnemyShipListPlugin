@@ -7,7 +7,7 @@ The search (`estimateBuilds`, using `estimatePhases` and `estimateRaceFocus`) ke
 LambdaMART ranker (`estimateRanker`) then orders them, from what `getBuildFeatures` says about each set. A build the search does not
 keep cannot be listed; `rankdata.js` prints how often the hulls built are among the kept sets, which is the limit on `hulls in top5`.
 
-Requires Python 3 with `numpy` and `lightgbm`, and Node.js. Generated files go to `data/` (not in git, about 3 GB for 102 games).
+Requires Python 3 with `numpy` and `lightgbm`, and Node.js. The GPU tuner also needs PyTorch with CUDA and an NVIDIA graphics card. Generated files go to `data/` (not in git, about 3 GB for 102 games).
 
 ## Retune after adding games
 
@@ -16,8 +16,13 @@ Add each game as a folder of `player<id>-turn<n>.trn` files in `CompleteGames`, 
 ```
 python extract.py        # extract new games (in parallel) and merge everything into data/
 python mkcases.py        # build turns to test on
+python ammo.py           # torpedoes and fighters made and laid per player and turn (in parallel), into data/games/ammo_<game>.json
+python ammostats.py      # torpedoes made and laid per launcher of each type (source of estimateTorpedoUse)
+node ammoeval.js         # how well the plugin tells the torpedo type laid and made, and the torpedo points of the laid mines
 python focus.py          # race focus tables: all games, plus one per left-out game for testing
 python writefocus.py     # write the all-games table into EnemyShips.js (estimateRaceFocus)
+node gpuexport.js        # optional: what the search needs for every build turn, for the GPU tuner (again after any change to EnemyShips.js)
+python gputune.py        # optional: retune estimatePhases on the graphics card (as tune.js, in minutes); copy the printed values
 node rankdata.js         # the sets the search keeps for each build turn, with labels and features
 python rank.py           # learn the ranker: one model per fold of games, then the final one (data/ranker.json)
 python writeranker.py    # write the final model into EnemyShips.js (estimateRanker)
@@ -31,7 +36,34 @@ Extraction reads about 1 GB of turn files per game and takes a few minutes for e
 Damaged turn files (several documents run together, sometimes of another game) are skipped with a warning; the following turn then has no builds to test.
 
 Run `rankdata.js`, `rank.py` and `writeranker.py` again after any change to the search or to the features: `data/ranker.json` only fits the features it was learned on.
-`node tune.js` still tunes `estimatePhases`, but now only decides which sets the search keeps; run it with `RANKER=0` to judge the search alone, then retrain the ranker.
+`node tune.js` (or `python gputune.py`, the same on the graphics card) still tunes `estimatePhases`, but now only decides which sets the search keeps; run it with `RANKER=0` to judge the search alone, then retrain the ranker.
+
+## Torpedoes and ammo
+
+`ammo.py` measures the torpedoes each player made per type (gained on ships seen both turns, loaded on new ships, added to starbase
+stock, and laid as mines: id squared mine units each, four times that for the Robots). Per launcher and turn, low grade launchers are
+rarely used (Mark 1 0.29, Proton 0.20 against Mark 7 1.48, Mark 8 1.27), which is `estimateTorpedoUse`. `getLikelyTorpedoes` weighs
+each type by the launchers known (predicted ships and ships seen, half weight after `estimateTorpedoRecent` turns unseen) times that
+use; the torpedo points used up by laid mines (`getMineChange`) are the mix of the likely types. Ammo loaded in the starbase builds
+uses the predicted ships' torpedoes, else the fleet's, and none when no launchers are known. Torpedo ships carry about 15% of their
+cargo in torpedoes, so cargo space is no limit on what is made.
+
+## Search on the graphics card
+
+`gpusearch.py` is the search of the plugin (`getBuildPriors` and `estimateBuilds`, ranked by the search
+alone as with `RANKER=0`) written in PyTorch, run on all build turns at once: about 6 s for every turn before the ship limit on an
+RTX 3060, against about 4.5 minutes for the plugin's code on 15 threads. `gpuexport.js` writes what does not depend on the search
+settings (hulls with their weights from the race and the fleet seen, the race's usual builds, components seen, the military change
+after the minefields, what was built) to `data/gpu_cases.json`, and the plugin's settings to `data/gpu_settings.json`.
+The GPU search must match the plugin: after changing either search, run
+
+```
+node gpuexport.js
+RANKER=0 node searchresults.js [overrides json]   # the plugin's search per turn, data/gpu_js.json
+python gpucheck.py [the same overrides json]      # scores of both and the turns where they differ
+```
+
+Both should give the same top1, top5, full and ships right on every turn (a few turns may differ in full where options tie).
 
 ## How scores are measured
 
@@ -73,14 +105,16 @@ score dropped, why. A run of the same model with the same scores is only added w
 | `node misses.js <phase> [ships]` | wrong top predictions with what was built, and the most common mix-ups |
 | `python races.py` | top hulls each race built per phase, with their usual outfit |
 | `python roles.py` | share of fighters, sweepers, scouts and utility ships per race and phase |
-| `node starbase.js` | how well the starbase builds (`estimateStarbaseBuilds`, `estimateStarbaseItems`) make up the rest of the military change, and which kinds of build they pick |
+| `node starbase.js` | (overrides in `OVR`) how well the starbase builds (`estimateStarbaseBuilds`, `estimateStarbaseItems`) make up the rest of the military change, and which kinds of build they pick |
 | `python ratio.py` | how much of the military change the ships built explain (source of the `fit` arrays) |
+| `python gputune.py` | tunes `estimatePhases` on the search alone like `tune.js`, on the graphics card; retrain the ranker after it |
 | `node confidence.js` | fits `estimateListed` and `estimateConfidenceSpread`, and how well the confidence matches what was built |
+| `node ammoeval.js [overrides]` | torpedo type laid as mines and made, and the error in the torpedo points of laid mines, against the old rule (torpedo on the most ships) |
 | `python phases.py` | hull size and component tech of the ships built, by how full the ship limit was |
 
 `report.js`, `tune.js` and `breakdown.js` take parameter overrides as JSON, for example
 `node report.js '{"estimatePhases":{"early":{"focusWeight":10}}}'`. Set `PLUGIN` to test another copy of the plugin
 and `FOCUS` to use another focus table from `data/` (for example one made with `python focus.py 10 focus_m10.json`).
 
-`analyze.py` and `sightings.py` (ships and minefields seen by other players) extract one game each and are run by `extract.py`; `common.py`, `evalcore.js` and
-`pool.js` are shared code.
+`analyze.py` and `sightings.py` (ships and minefields seen by other players) extract one game each and are run by `extract.py`; `common.py`, `evalcore.js`
+and `pool.js` are shared code.
