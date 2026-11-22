@@ -22,6 +22,11 @@ X = np.concatenate([np.fromfile(data_path(f)).reshape(-1, width) for f in meta['
 X = X[np.argsort(X[:, 0], kind='stable')]        # the sets of a case stay in order and together
 cases, game, phase, label, hullset, shiphit = (X[:, i] for i in range(6))
 F = X[:, 6:]
+# DROP=<prefix>: blank the features starting with it, to measure what they add
+if os.environ.get('DROP'):
+    for i, f in enumerate(features):
+        if f.startswith(os.environ['DROP']):
+            F[:, i] = -1
 starts = np.flatnonzero(np.r_[True, cases[1:] != cases[:-1]])
 ends = np.r_[starts[1:], len(cases)]
 print('sets', len(X), 'turns', len(starts), 'of', meta['cases'], 'games', len(meta['games']))

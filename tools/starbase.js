@@ -1,19 +1,20 @@
-// Accuracy of estimateStarbaseBuilds (the starbase builds that make up the rest of the military change) against complete games: turns where the scoreboard matches the summed values,
+// Accuracy of estimateStarbaseBuilds (OVR: parameter overrides as json; prints the mean error in points of each kind) (the starbase builds that make up the rest of the military change) against complete games: turns where the scoreboard matches the summed values,
 // given the true new ships, the player's earlier builds as the known fleet and the real starbase count. Saves reports/starbase.tsv.
 const fs = require('fs');
 const path = require('path');
 const core = require('./evalcore.js')(false);
 const writeTsv = require('./tsv.js');
-const plugin = core.plugin;
+const plugin = core.plugin; Object.assign(plugin, JSON.parse(process.env.OVR || "{}"));
 const seen = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'seen.json')));
 const d = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'data.json')));
 const fleet = {};
 for (const b of d.builds) (fleet[b.game + '|' + b.player] = fleet[b.game + '|' + b.player] || []).push(b);
-let n = 0, exact = 0, kindsRight = 0, fRight = 0, fTurns = 0; const conf = {}; const show = [];
+const err = {}; let last = null, n = 0, exact = 0, kindsRight = 0, fRight = 0, fTurns = 0; const conf = {}; const show = [];
 for (const r of d.records) {
   if (!r.d || r.turn < 2 || r.score == null || !r.militarychange || r.totalships >= r.shiplimit) continue;
   if (Math.abs(r.militarychange - r.d.model) > 1 && r.turn > 2) continue;
   const T = seen.tables[r.game]; if (!T) continue;
+  if (last != r.game + r.player) { core.setPlayer(r.game, r.player); last = r.game + r.player; }
   const H = new Map(T.hulls.map(x => [x.id, x])), TP = new Map(T.torpedos.map(x => [x.id, x]));
   vgap.getTorpedo = id => TP.get(+id); vgap.getHull = id => H.get(+id);
   global.getNumForPlayer = () => r.sbtech.length;
@@ -30,8 +31,10 @@ for (const r of d.records) {
   const tk = Object.keys(parts).filter(k => parts[k] > 0).join(''), gk = Object.keys(got).filter(k => got[k] > 0).join('');
   if (tk == gk) kindsRight++;
   conf[tk + ' -> ' + gk] = (conf[tk + ' -> ' + gk] || 0) + 1;
+  for (const k of ['f','b','p','a']) { err[k] = (err[k] || 0) + Math.abs(got[k] - parts[k]); }
   if (parts.f > 0) { fTurns++; if (Math.abs(got.f - parts.f) < 1) fRight++; }
 }
+console.log('mean abs error points', JSON.stringify(Object.fromEntries(Object.entries(err).map(([k,v])=>[k,Math.round(v/n)]))));
 console.log('turns', n, 'made up within 1 point', exact, 'kinds right', kindsRight, 'starbase fighter turns', fTurns, 'fighter count right', fRight);
 const kinds = Object.entries(conf).sort((a, b) => b[1] - a[1]);
 console.log(kinds.slice(0, 14).map(e => e[1] + '  ' + e[0]).join('\n'));

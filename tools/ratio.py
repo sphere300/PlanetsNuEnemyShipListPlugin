@@ -1,14 +1,14 @@
 """How much of the military change the ships built explain, per phase (source of estimatePhases fit). Saves reports/ratio.tsv. Usage: python ratio.py"""
-import json, collections
-from common import true_builds, q, load, data_path, write_tsv
+import collections
+from common import true_builds, q, load, write_tsv
 d = load('data.json')
-tot = {(r['game'], r['turn']): r['totalships'] for r in d['records']}
+tot = {(r['game'], r['player'], r['turn']): r['totalships'] for r in d['records']}
 R = collections.defaultdict(list)
 for r in d['records']:
     built = true_builds(r)
     if not built or not r['militarychange'] or r['militarychange'] <= 0 or not r['shipchange'] or r['shipchange'] <= 0: continue
     if r['shipchange'] != len(built) or len([x for x in r['new'] if x['warship']]) != len(built): continue
-    f = tot.get((r['game'], r['turn'] - 1), 0) / r['shiplimit']
+    f = tot.get((r['game'], r['player'], r['turn'] - 1), 0) / r['shiplimit']
     p = 'opening' if f < .25 else 'early' if f < .5 else 'nearCap' if f < 1 else 'afterCap'
     R[p].append(sum(b['value'] for b in built) / r['militarychange'])
 rows = []
