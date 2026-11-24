@@ -824,12 +824,21 @@ function wrapper() { // wrapper for injection
 				return;
 			}
 
+			//a predicted future turn is no sighting, and would count as the next turn and make the list skip the real one
+			if (this.isPredictedTurn()) {
+				console.log("EnemyShipListPlugin: Predicted future turn: ignored.");
+				return;
+			}
+			//the list ran through predicted turns before they were skipped: take them back on the real current turn
+			if (!vgap.inHistory && vgap.nowTurn > 0 && this.currentListTurn > vgap.nowTurn)
+				this.dropPredictedTurns();
+
 			//the scoreboard of any loaded turn is valid on its own, so record it even if the list is not updated
 			this.recordScores();
 			this.recordMinefields();
 
 			if (vgap.game.turn <= this.currentListTurn) {
-				//an older turn still shows the masses of that turn, which lists from before mass was kept do not have
+				//an older turn still shows what it saw: it fills in or corrects the history kept for it
 				this.backfillMassHistory();
 				console.log("EnemyShipListPlugin: Turn before latest integrated data: ignored.");
 				return;
@@ -1069,6 +1078,9 @@ function wrapper() { // wrapper for injection
 				//mass at the end of the turn, over the mass seen in combat earlier in the turn
 				if (vgap.ships[i].mass > 0)
 					n.history[vgap.game.turn]['m'] = vgap.ships[i].mass;
+				//warp the ship moved at: a ship that moved at warp 0 was towed
+				if (vgap.ships[i].warp >= 0)
+					n.history[vgap.game.turn]['w'] = vgap.ships[i].warp;
 				//this.enemyShipList.push(vgap.ships[i]);
 				this.enemyShipList.push(n);
 				//console.log(i + ": add id: " + vgap.ships[i].id + " length: " + this.enemyShipList.length);
@@ -3722,10 +3734,41 @@ function wrapper() { // wrapper for injection
 		 * Number of turns shown in the mass column of an enemy ship's hull info popup
 		 */
 		massHistoryTurns: 5,
+		transitMaxTurns: 20,	//most moves in a row counted as one transit in the mass popup
+		transitLookback: 30,	//turns back the mass popup looks for the latest transit
 
 		/**
-		 * Add the masses of the loaded turn to the history of the listed ships seen in it that have no mass for it yet.
-		 * Used for turns the list has already processed, so browsing back fills in the masses lists from before kept none.
+		 * Check if the loaded turn is a prediction: the time machine's future view runs the host on the current turn,
+		 * which moves enemy ships only by guesses (they stay put), so it is no sighting
+		 */
+		isPredictedTurn: function () {
+			return !!(vgap.inHistory && vgap.inFuture) || (vgap.nowTurn > 0 && vgap.settings && vgap.settings.turn > vgap.nowTurn);
+		},
+
+		/**
+		 * Take back turns the list ran through from predictions before they were skipped: sightings after the current turn
+		 * are dropped, and so are ships only seen in them, so the real turns are read in when they come
+		 */
+		dropPredictedTurns: function () {
+			var now = vgap.nowTurn;
+			for (var s = this.enemyShipList.length - 1; s >= 0; s--) {
+				var ship = this.enemyShipList[s];
+				for (var key in ship.history || {}) {
+					if (parseInt(key, 10) > now)
+						delete ship.history[key];
+				}
+				if (Object.keys(ship.history || {}).length == 0 && parseInt(ship.infoturn, 10) > now)
+					this.enemyShipList.splice(s, 1);
+			}
+			console.log("EnemyShipListPlugin: List was at predicted turn " + this.currentListTurn + ", set back to turn " + now + ".");
+			this.currentListTurn = now;
+			this.saveEnemyShipList();
+		},
+
+		/**
+		 * Write what the listed ships seen in the loaded turn showed into their history for that turn: position, mass and
+		 * warp. Used for turns the list has already processed, so browsing back fills in what lists from before kept none
+		 * of, and replaces sightings taken from a predicted future turn (see isPredictedTurn) by the real ones.
 		 */
 		backfillMassHistory: function () {
 			if (!vgap.ships)
@@ -3735,8 +3778,8 @@ function wrapper() { // wrapper for injection
 			var changed = 0;
 			for (var i = 0; i < vgap.ships.length; i++) {
 				var live = vgap.ships[i];
-				//only ships seen this turn: NU keeps older sightings of enemy ships with their old mass
-				if (!(live.id > 0) || !(live.mass > 0) || (live.infoturn > 0 && parseInt(live.infoturn, 10) < turn))
+				//only ships seen this turn: NU keeps older sightings of enemy ships with their old position and mass
+				if (!(live.id > 0) || (live.infoturn > 0 && parseInt(live.infoturn, 10) < turn))
 					continue;
 				var ship = this.getShipById(live.id);
 				//the same ship: same hull, first seen no later than this turn
@@ -3744,17 +3787,28 @@ function wrapper() { // wrapper for injection
 					continue;
 				if (!ship.history)
 					ship.history = {};
-				var entry = ship.history[turn];
-				if (!entry)
-					entry = ship.history[turn] = { x: live.x, y: live.y };
-				if (entry.m > 0)
+				var entry = ship.history[turn] || (ship.history[turn] = {});
+				var seen = { x: live.x, y: live.y };
+				if (live.mass > 0)
+					seen.m = live.mass;
+				if (live.warp >= 0)
+					seen.w = live.warp;
+				var differs = false;
+				for (var key in seen) {
+					if (entry[key] !== seen[key]) {
+						entry[key] = seen[key];
+						differs = true;
+					}
+				}
+				if (!differs)
 					continue;
-				entry.m = live.mass;
-				var min = this.getMinSeenMass(ship);
-				ship.minMass = min != null ? Math.min(min, live.mass) : live.mass;
+				if (seen.m > 0) {
+					var min = this.getMinSeenMass(ship);
+					ship.minMass = min != null ? Math.min(min, seen.m) : seen.m;
+				}
 				changed++;
 			}
-			console.log("EnemyShipListPlugin: Mass history for turn " + turn + " filled in for " + changed + " ship(s).");
+			console.log("EnemyShipListPlugin: History for turn " + turn + " filled in or corrected for " + changed + " ship(s).");
 			if (changed > 0)
 				this.saveEnemyShipList();
 		},
@@ -3789,6 +3843,7 @@ function wrapper() { // wrapper for injection
 			if (listed && live && listed.hullid != live.hullid)
 				listed = null;
 			var history = (listed && listed.history) || {};
+			var transit = this.getTransitEstimate(shipId);
 
 			var cells = "";
 			var prev = null;
@@ -3801,14 +3856,315 @@ function wrapper() { // wrapper for injection
 					color = mass > prev ? "#f99" : "#9f9";
 				else if (mass != null)
 					color = "#fff";
-				cells += "<div style='display:flex; justify-content:space-between; padding:2px 0; border-bottom:solid 1px #444;'>" +
+				var stepText = " title='" + this.tooltipText(transit.byTurn[t] || this.getTurnDetail(shipId, t)) + "'";
+				cells += "<div" + stepText + " style='display:flex; justify-content:space-between; padding:2px 0; border-bottom:solid 1px #444;'>" +
 					"<span style='color:#999;'>T" + t + "</span>" +
 					"<span style='color:" + color + ";'>" + (mass != null ? mass + " kt" : "&ndash;") + "</span></div>";
 				if (mass != null)
 					prev = mass;
 			}
-			return "<div style='flex:0 0 " + (this.massHistoryWidth - 20) + "px;' title='Mass seen over the last " + this.massHistoryTurns + " turns; red is heavier, green lighter than the sighting before'>" +
+			return "<div style='flex:0 0 " + (this.massHistoryWidth - 20) + "px; cursor:help;' title='" + this.tooltipText(transit.summary) + "'>" +
 				"<div class='DarkBar'>Mass:</div>" + cells + "</div>";
+		},
+
+		/**
+		 * Text lines for a title attribute: escaped, one line each
+		 * @param lines		string or array of strings
+		 */
+		tooltipText: function (lines) {
+			return this.escapeHtml([].concat(lines).join("\n")).replace(/\n/g, "&#10;");
+		},
+
+		/**
+		 * Where a ship was seen in a turn, with its mass and warp when known: from the list's history, and for the
+		 * viewed turn from the client's ship when it was seen this turn
+		 * @return 		{x, y, m, w} (m and w null when unknown), null if not seen in the turn
+		 */
+		getSighting: function (listed, live, turn) {
+			var entry = listed && listed.history ? listed.history[turn] : null;
+			var sighting = entry ? { x: entry.x, y: entry.y, m: entry.m > 0 ? entry.m : null, w: entry.w != null ? entry.w : null } : null;
+			if (turn == vgap.game.turn && live && !this.isPredictedTurn() && !(live.infoturn > 0 && parseInt(live.infoturn, 10) < turn)) {
+				if (!sighting)
+					sighting = { x: live.x, y: live.y, m: null, w: null };
+				if (sighting.m == null && live.mass > 0)
+					sighting.m = live.mass;
+				if (sighting.w == null && live.warp >= 0)
+					sighting.w = live.warp;
+			}
+			return sighting;
+		},
+
+		/**
+		 * The ship towing or towed by a ship in a move: another ship seen at the same place before and after the move,
+		 * where one of the two moved at warp 0 (a towed ship shows warp 0 while moving)
+		 * @param ship		listed ship
+		 * @param from		its sighting before the move, turn - 1
+		 * @param to		its sighting after the move
+		 * @return 			{role: "towing" or "towed", ship, mass (of the towed ship before the move, null if unknown)}, or null
+		 */
+		findTowPartner: function (ship, from, to, turn) {
+			for (var s = 0; s < this.enemyShipList.length; s++) {
+				var other = this.enemyShipList[s];
+				if (other.id == ship.id)
+					continue;
+				var live = vgap.getShip ? vgap.getShip(other.id) : null;
+				if (live && live.hullid != other.hullid)
+					live = null;
+				var a = this.getSighting(other, live, turn - 1), b = this.getSighting(other, live, turn);
+				if (!a || !b || Math.dist(a.x, a.y, from.x, from.y) > 1 || Math.dist(b.x, b.y, to.x, to.y) > 1)
+					continue;
+				if (b.w === 0 && to.w > 0)
+					return { role: "towing", ship: other, mass: a.m };
+				if (to.w === 0 && b.w > 0)
+					return { role: "towed", ship: other, mass: from.m };
+			}
+			return null;
+		},
+
+		/**
+		 * Fuel a ship burns in one move, by the client's formula, for each engine it may have
+		 * @return 		{min, max} in kt, null if the client has no fuel formula
+		 */
+		getMoveFuel: function (ship, distance, mass, warp) {
+			if (!vgap.turnFuel || !vgap.getXV || !vgap.getSpeed)
+				return null;
+			var engine = ship.engineid > 0 ? vgap.getEngine(ship.engineid) : null;
+			var engines = engine ? [engine] : vgap.engines;
+			var mods = vgap.getFuelEfficiencyMods ? vgap.getFuelEfficiencyMods({ ownerid: ship.ownerid, hullid: ship.hullid }) : null;
+			var turndistance = vgap.getSpeed(warp, ship.hullid);
+			var range = null;
+			for (var e = 0; e < engines.length; e++) {
+				var fuel = vgap.turnFuel(distance, mass, vgap.getXV(engines[e], warp) || 0, turndistance, 0, mods);
+				range = range ? { min: Math.min(range.min, fuel), max: Math.max(range.max, fuel) } : { min: fuel, max: fuel };
+			}
+			return range;
+		},
+
+		/**
+		 * One move of a ship: distance, warp, tow, fuel burned and mass change
+		 * @param from		sighting before the move (turn - 1)
+		 * @param to		sighting after the move
+		 * @return 		{lines: text, distance, fuel ({min, max}, null if not estimated), change (mass, null if unknown)}
+		 */
+		getMoveDetail: function (ship, from, to, t) {
+			var distance = Math.dist(from.x, from.y, to.x, to.y);
+			var line = "T" + (t - 1) + " to T" + t + ": " + Math.round(distance) + " ly";
+			var notes = [];
+			//warp the move was made at: as seen, else the lowest warp that covers the distance
+			var warp = to.w != null ? to.w : from.w;
+			var tow = this.findTowPartner(ship, from, to, t);
+			if (tow && tow.role == "towed")
+				warp = 0;
+			if (warp == null || (warp == 0 && !tow)) {
+				warp = Math.min(9, Math.ceil(Math.sqrt(distance / (vgap.getSpeed ? vgap.getSpeed(1, ship.hullid) : 1))));
+				notes.push("warp not seen, at least W" + warp);
+			}
+			line += " at W" + warp;
+			var fuel = null;
+			if (tow && tow.role == "towed") {
+				notes.push("towed by #" + tow.ship.id + " " + tow.ship.name + " (this ship shows W0), the tower burns the fuel");
+				fuel = { min: 0, max: 0 };
+			} else if (vgap.getSpeed && distance > vgap.getSpeed(warp, ship.hullid) + 1) {
+				notes.push("farther than W" + warp + " goes: jumped or warped, fuel not estimated");
+			} else if (from.m != null) {
+				var mass = from.m;
+				if (tow) {
+					notes.push("towing #" + tow.ship.id + " " + tow.ship.name + " (shows W0" + (tow.mass != null ? ", " + tow.mass + " kt" : ", mass unknown") + ")");
+					if (tow.mass != null)
+						mass += tow.mass;
+				}
+				fuel = this.getMoveFuel(ship, distance, mass, warp);
+				if (tow && tow.mass == null)
+					fuel = null;
+			}
+			var change = from.m != null && to.m != null ? to.m - from.m : null;
+			line += ", mass " + (from.m != null ? from.m : "?") + " to " + (to.m != null ? to.m : "?") + " kt" +
+				(change != null ? " (" + (change > 0 ? "+" : "") + change + ")" : "");
+			line += ", fuel burn " + (fuel ? (fuel.min == fuel.max ? fuel.min : fuel.min + "-" + fuel.max) + " kt" : "?");
+			return { lines: [line].concat(notes.map(function (n) { return "  " + n; })), distance: distance, fuel: fuel, change: change, warp: warp, tow: tow };
+		},
+
+		/**
+		 * The 5 summary lines of a run of moves: span and distance, engine, fuel burn, mass change, and what the fuel burn
+		 * does not explain. A single move also names its warp and any tow on the first line.
+		 * @param moves		results of getMoveDetail, oldest first; a ship that did not move has one move of 0 ly
+		 */
+		getMoveSummary: function (ship, moves, first, last) {
+			var engine = ship.engineid > 0 ? vgap.getEngine(ship.engineid) : null;
+			var total = { distance: 0, fuelMin: 0, fuelMax: 0, massChange: 0, fuelKnown: true, massKnown: true };
+			for (var m = 0; m < moves.length; m++) {
+				total.distance += moves[m].distance;
+				if (moves[m].fuel) {
+					total.fuelMin += moves[m].fuel.min;
+					total.fuelMax += moves[m].fuel.max;
+				} else
+					total.fuelKnown = false;
+				if (moves[m].change != null)
+					total.massChange += moves[m].change;
+				else
+					total.massKnown = false;
+			}
+			var span = "Transit T" + (first - 1) + " to T" + last + ": ";
+			var head;
+			if (moves.length == 1 && moves[0].distance == 0)
+				head = span + "did not move, 0 ly";
+			else {
+				head = span + moves.length + " move" + (moves.length == 1 ? "" : "s") + ", " + Math.round(total.distance) + " ly";
+				if (moves.length == 1 && moves[0].warp != null)
+					head += " at W" + moves[0].warp;
+				var tow = moves.length == 1 ? moves[0].tow : null;
+				if (tow)
+					head += tow.role == "towing" ? ", towing #" + tow.ship.id + " " + tow.ship.name : ", towed by #" + tow.ship.id + " " + tow.ship.name;
+			}
+			var lines = [head];
+			lines.push("Engine: " + (engine ? engine.name : "not seen, fuel shown from the most to the least efficient engine"));
+			var fuelText = total.fuelMin == total.fuelMax ? total.fuelMin : total.fuelMin + "-" + total.fuelMax;
+			lines.push("Estimated fuel burn: " + fuelText + " kt" + (total.fuelKnown ? "" : " (some moves not estimated)"));
+			lines.push("Mass change: " + (total.massChange > 0 ? "+" : "") + total.massChange + " kt" + (total.massKnown ? "" : " (some masses not seen)"));
+			if (total.fuelKnown && total.massKnown) {
+				//what the fuel burn does not explain: cargo, ammo or fuel loaded (+) or unloaded (-) on the way
+				var restMin = total.massChange + total.fuelMin, restMax = total.massChange + total.fuelMax;
+				var restText = restMin == restMax ? (restMin > 0 ? "+" : "") + restMin : restMin + " to " + restMax;
+				lines.push("Not explained by fuel: " + restText + " kt");
+			}
+			return lines;
+		},
+
+		originMaxPlanets: 6,	//most planets listed as where a ship first seen in deep space may have come from
+		warpWellRadius: 3,		//light years around a planet that count as at the planet
+
+		/**
+		 * Where a ship first seen in deep space may have come from: the planets within one turn's move of where it was
+		 * seen (at its warp if seen, else warp 9), nearest first, with the fuel that move burns
+		 * @param ship		listed or live ship
+		 * @param to		its sighting, {x, y, m, w}
+		 * @return 		lines of text, empty if the ship was seen at a planet or no planets are known
+		 */
+		getOriginLines: function (ship, to) {
+			if (!vgap.planets || !vgap.getSpeed)
+				return [];
+			var plugin = this;
+			for (var p = 0; p < vgap.planets.length; p++) {
+				if (Math.dist(vgap.planets[p].x, vgap.planets[p].y, to.x, to.y) <= this.warpWellRadius)
+					return [];
+			}
+			var warp = to.w > 0 ? to.w : 9;
+			var reach = vgap.getSpeed(warp, ship.hullid) + this.warpWellRadius;
+			var candidates = [];
+			for (var p = 0; p < vgap.planets.length; p++) {
+				var planet = vgap.planets[p];
+				var distance = Math.dist(planet.x, planet.y, to.x, to.y);
+				if (distance <= reach)
+					candidates.push({ planet: planet, distance: distance });
+			}
+			candidates.sort(function (a, b) { return a.distance - b.distance; });
+			var lines = ["First seen in deep space at (" + to.x + "," + to.y + "). Planets within one turn at W" + warp +
+				(to.w > 0 ? "" : " (warp not seen)") + ", " + Math.round(reach) + " ly:"];
+			if (candidates.length == 0)
+				return lines.concat(["  none: it came from farther away over turns it was not seen, or jumped"]);
+			var fuelText = function (distance) {
+				if (vgap.gameUsesFuel && !vgap.gameUsesFuel())
+					return "";
+				if (to.m == null)
+					return ", fuel burn ? (mass not seen)";
+				//the ship was heavier by the fuel it burned on the way
+				var first = plugin.getMoveFuel(ship, distance, to.m, warp);
+				if (!first)
+					return "";
+				var min = plugin.getMoveFuel(ship, distance, to.m + first.min, warp).min;
+				var max = plugin.getMoveFuel(ship, distance, to.m + first.max, warp).max;
+				return ", fuel burn " + (min == max ? min : min + "-" + max) + " kt";
+			};
+			for (var c = 0; c < candidates.length && c < this.originMaxPlanets; c++) {
+				var planet = candidates[c].planet;
+				var notes = [];
+				if (planet.ownerid > 0) {
+					var owner = vgap.getPlayer(planet.ownerid);
+					notes.push(planet.ownerid == ship.ownerid ? "own planet" : "owner " + (owner ? owner.username : planet.ownerid));
+				} else
+					notes.push("unowned or not known");
+				if (vgap.getStarbase && vgap.getStarbase(planet.id))
+					notes.push("starbase");
+				lines.push("  #" + planet.id + " " + planet.name + ": " + Math.round(candidates[c].distance) + " ly (" + notes.join(", ") + ")" + fuelText(candidates[c].distance));
+			}
+			if (candidates.length > this.originMaxPlanets)
+				lines.push("  and " + (candidates.length - this.originMaxPlanets) + " more farther away");
+			return lines;
+		},
+
+		/**
+		 * Hover lines for one turn of the mass column: the move into the turn, or why there is none
+		 */
+		getTurnDetail: function (shipId, t) {
+			var listed = this.getShipById(shipId);
+			var live = vgap.getShip ? vgap.getShip(shipId) : null;
+			if (listed && live && listed.hullid != live.hullid)
+				listed = null;
+			var ship = listed || live;
+			if (!ship)
+				return [];
+			var from = this.getSighting(listed, live, t - 1), to = this.getSighting(listed, live, t);
+			if (!to)
+				return ["T" + t + ": not seen"];
+			if (!from)
+				return ["T" + t + ": seen" + (to.m != null ? " at " + to.m + " kt" : "") + ", not seen in T" + (t - 1) + ", so no move to compare"].concat(this.getOriginLines(ship, to));
+			if (vgap.gameUsesFuel && !vgap.gameUsesFuel())
+				return ["This game does not use fuel."];
+			var move = Math.dist(from.x, from.y, to.x, to.y) > 0.5 ? this.getMoveDetail(ship, from, to, t) :
+				{ distance: 0, fuel: { min: 0, max: 0 }, change: from.m != null && to.m != null ? to.m - from.m : null };
+			return this.getMoveSummary(ship, [move], t, t);
+		},
+
+		/**
+		 * The latest transit of a ship: the turns in a row, up to transitMaxTurns, in which it was seen moving, with the
+		 * fuel each move burns next to the change in its mass, and any ship it towed or was towed by
+		 * @return 		{summary: lines of text, byTurn: lines per turn of a move}
+		 */
+		getTransitEstimate: function (shipId) {
+			var plugin = this;
+			var listed = this.getShipById(shipId);
+			var live = vgap.getShip ? vgap.getShip(shipId) : null;
+			if (listed && live && listed.hullid != live.hullid)
+				listed = null;
+			var ship = listed || live;
+			var result = { summary: [], byTurn: {} };
+			if (!ship)
+				return result;
+			if (vgap.gameUsesFuel && !vgap.gameUsesFuel()) {
+				result.summary.push("This game does not use fuel.");
+				return result;
+			}
+			var sighting = function (t) { return plugin.getSighting(listed, live, t); };
+			var moved = function (t) {
+				var a = sighting(t - 1), b = sighting(t);
+				return !!(a && b && Math.dist(a.x, a.y, b.x, b.y) > 0.5);
+			};
+			//the latest move, then the moves before it in a row
+			var last = vgap.game.turn;
+			while (last > vgap.game.turn - this.transitLookback && !moved(last))
+				last--;
+			if (!moved(last)) {
+				result.summary.push("Transit: not seen moving in the last " + this.transitLookback + " turns.");
+				//a ship that appeared and stayed put: where it may have come from
+				var appeared = vgap.game.turn;
+				while (appeared > vgap.game.turn - this.transitLookback && sighting(appeared - 1))
+					appeared--;
+				if (sighting(appeared) && !sighting(appeared - 1))
+					result.summary = result.summary.concat(this.getOriginLines(ship, sighting(appeared)));
+				return result;
+			}
+			var first = last;
+			while (first > last - this.transitMaxTurns + 1 && moved(first - 1))
+				first--;
+
+			var moves = [];
+			for (var t = first; t <= last; t++) {
+				var move = this.getMoveDetail(ship, sighting(t - 1), sighting(t), t);
+				moves.push(move);
+				result.byTurn[t] = this.getMoveSummary(ship, [move], t, t);
+			}
+			result.summary = this.getMoveSummary(ship, moves, first, last);
+			return result;
 		},
 
 		/**
